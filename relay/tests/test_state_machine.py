@@ -3,16 +3,28 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from identity import build_instructions, build_payload, build_summary  # noqa: E402
-from lifecycle import ERROR_EMOJI, Lifecycle  # noqa: E402
+import identity  # noqa: E402
+from identity import (  # noqa: E402
+    UNRESOLVED_TTL,
+    IdentityResolver,
+    build_instructions,
+    build_payload,
+    build_summary,
+    console_url,
+)
+from lifecycle import ERROR_EMOJI, Lifecycle, _parse_feishu_time  # noqa: E402
 from store import Store  # noqa: E402
 
 
@@ -220,6 +232,141 @@ class StateMachineTests(unittest.TestCase):
         self.assertEqual(len(self.ops.created), 1)
 
 
+    def test_p2p_fallback_ignores_bot_replies_to_other_messages(self):
+        self.life.start_working("msg_a", "chat_1", "p2p")
+        self.clock.advance(10)
+        self.life.start_working("msg_b", "chat_1", "p2p")
+        sender = {"sender_type": "app", "id": "example-bot-app-id"}
+        n = self.life.apply_listed_messages(
+            "chat_1",
+            [
+                {"message_id": "bot_1", "reply_to": "msg_a", "sender": sender, "create_time": 1_000_030},
+            ],
+            "p2p",
+        )
+        # The reply answers msg_a only; it must not also close msg_b.
+        self.assertEqual(n, 1)
+        self.assertEqual(self.store.get_job("msg_a")["state"], "done")
+        self.assertEqual(self.store.get_job("msg_b")["state"], "pending")
+        # A reply to some unrelated message is not a candidate either.
+        n = self.life.apply_listed_messages(
+            "chat_1",
+            [{"message_id": "bot_2", "reply_to": "msg_other", "sender": sender, "create_time": 1_000_040}],
+            "p2p",
+        )
+        self.assertEqual(n, 0)
+        self.assertEqual(self.store.get_job("msg_b")["state"], "pending")
+        # A plain bot message with no parent still closes the oldest job.
+        n = self.life.apply_listed_messages(
+            "chat_1",
+            [{"message_id": "bot_3", "sender": sender, "create_time": 1_000_050}],
+            "p2p",
+        )
+        self.assertEqual(n, 1)
+        self.assertEqual(self.store.get_job("msg_b")["state"], "done")
+
+    def test_abandon_stale_stops_polling_old_jobs(self):
+        self.life.start_working("msg_pending", "chat_1", "p2p")
+        self.life.start_working("msg_error", "chat_2", "p2p")
+        self.life.mark_webhook_failed("msg_error")
+        self.clock.advance(6 * 3600 - 1)
+        self.life.start_working("msg_fresh", "chat_3", "p2p")
+        self.assertEqual(self.life.abandon_stale(), [])
+        self.clock.advance(2)
+        changed = self.life.abandon_stale()
+        self.assertEqual({j["message_id"] for j in changed}, {"msg_pending", "msg_error"})
+        for mid in ("msg_pending", "msg_error"):
+            job = self.store.get_job(mid)
+            self.assertEqual(job["state"], "abandoned")
+            self.assertTrue(job["reaction_id"])  # the reaction stays on the message
+        self.assertEqual([j["message_id"] for j in self.store.active_jobs()], ["msg_fresh"])
+        self.assertEqual([j["message_id"] for j in self.store.pending_jobs()], ["msg_fresh"])
+        self.assertEqual(self.store.active_in_chat("chat_1"), [])
+        self.assertEqual(self.life.abandon_stale(), [])
+        # A reply that shows up later still completes the job and removes the emoji.
+        rid = self.store.get_job("msg_pending")["reaction_id"]
+        self.life.complete("msg_pending", reason="late_reply")
+        self.assertEqual(self.store.get_job("msg_pending")["state"], "done")
+        self.assertIn(("msg_pending", rid), self.ops.deleted)
+
+
+class FeishuTimeTests(unittest.TestCase):
+    def test_naive_string_is_local_time(self):
+        expected = time.mktime((2026, 1, 2, 3, 4, 0, 0, 0, -1))
+        self.assertEqual(_parse_feishu_time("2026-01-02 03:04"), expected)
+        self.assertEqual(_parse_feishu_time("2026-01-02 03:04:30"), expected + 30)
+        self.assertEqual(
+            _parse_feishu_time("2026-01-02 03:04"), datetime(2026, 1, 2, 3, 4).astimezone().timestamp()
+        )
+
+    def test_numbers_are_epoch(self):
+        self.assertEqual(_parse_feishu_time(1_700_000_000), 1_700_000_000)
+        self.assertEqual(_parse_feishu_time("1700000000000"), 1_700_000_000)
+        self.assertIsNone(_parse_feishu_time("nonsense"))
+
+
+class FakeCli:
+    def __init__(self, envelope):
+        self.envelope = envelope
+        self.calls = 0
+
+    def __call__(self, args, **kwargs):
+        self.calls += 1
+        return self.envelope
+
+
+class IdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "state.db")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_unresolved_user_is_cached_briefly(self):
+        fake = FakeCli({"ok": False, "error": {"type": "authorization", "subtype": "app_scope_not_applied"}})
+        resolver = IdentityResolver(self.store)
+        with mock.patch.object(identity, "run_cli_retry", fake):
+            profile = resolver.resolve_user("ou_1")
+        self.assertTrue(profile["name_unresolved"])
+        self.assertIn("scope_hint", profile)
+        now = time.time()
+        self.assertIsNotNone(self.store.cache_get("user", "ou_1", now=now + UNRESOLVED_TTL - 5))
+        self.assertIsNone(self.store.cache_get("user", "ou_1", now=now + UNRESOLVED_TTL + 5))
+
+    def test_resolved_user_keeps_long_ttl(self):
+        fake = FakeCli({"ok": True, "data": {"user": {"name": "Alice", "open_id": "ou_2"}}})
+        resolver = IdentityResolver(self.store)
+        with mock.patch.object(identity, "run_cli_retry", fake):
+            profile = resolver.resolve_user("ou_2")
+        self.assertEqual(profile["name"], "Alice")
+        self.assertFalse(profile["name_unresolved"])
+        self.assertIsNotNone(self.store.cache_get("user", "ou_2", now=time.time() + 3600))
+
+
+class ConsoleUrlTests(unittest.TestCase):
+    def _env(self, **values):
+        base = {k: "" for k in ("LARK_CONSOLE_URL", "LARK_BRAND", "LARK_BOT_APP_ID")}
+        return mock.patch.dict(os.environ, {**base, **values})
+
+    def test_without_app_id(self):
+        with self._env():
+            self.assertEqual(console_url(), "https://open.feishu.cn/app")
+        with self._env(LARK_BRAND="lark"):
+            self.assertEqual(console_url(), "https://open.larksuite.com/app")
+
+    def test_with_app_id_points_at_permission_page(self):
+        with self._env(LARK_BOT_APP_ID="cli_abc"):
+            self.assertEqual(console_url(), "https://open.feishu.cn/app/cli_abc/auth")
+        with self._env(LARK_BOT_APP_ID="cli_abc", LARK_BRAND="larksuite"):
+            self.assertEqual(console_url(), "https://open.larksuite.com/app/cli_abc/auth")
+
+    def test_explicit_url_wins(self):
+        with self._env(LARK_CONSOLE_URL="https://console.example/x", LARK_BOT_APP_ID="cli_abc"):
+            self.assertEqual(console_url(), "https://console.example/x")
+
+
 class PayloadTests(unittest.TestCase):
     def test_instructions_are_english_and_have_no_owner(self):
         text = build_instructions("msg_abc")
@@ -234,6 +381,29 @@ class PayloadTests(unittest.TestCase):
         self.assertIn("sender's language", text)
         self.assertNotIn("is_owner", text)
         self.assertNotIn("owner", text.lower().replace("no sender is a special owner", ""))
+
+    def test_instructions_use_the_relays_store_path(self):
+        with mock.patch.dict(os.environ, {"LARK_BOT_ENV": "/srv/bots/second/env.sh"}):
+            text = build_instructions("msg_abc")
+        self.assertIn('source "/srv/bots/second/env.sh" && lark-cli im +messages-reply', text)
+        self.assertNotIn("lark-bot/env.sh", text)
+        self.assertIn("app_scope_not_applied", text)
+
+    def test_payload_has_console_url(self):
+        class R:
+            def resolve_user(self, open_id, message_id=None, hint=None):
+                return {"open_id": open_id, "name": "A", "name_unresolved": False}
+
+            def resolve_chat(self, chat_id, chat_type=None):
+                return {"chat_id": chat_id, "type": chat_type}
+
+            def resolve_mentions(self, mentions):
+                return []
+
+        env = {"LARK_CONSOLE_URL": "", "LARK_BRAND": "", "LARK_BOT_APP_ID": "cli_abc"}
+        with mock.patch.dict(os.environ, env):
+            payload = build_payload({"message_id": "m", "chat_id": "c", "chat_type": "p2p", "sender_id": "u"}, R())
+        self.assertEqual(payload["console_url"], "https://open.feishu.cn/app/cli_abc/auth")
 
     def test_summary_has_no_owner_label(self):
         s = build_summary(

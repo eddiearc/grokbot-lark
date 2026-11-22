@@ -7,12 +7,14 @@ import os
 import re
 from typing import Any, Callable
 
-from cliutil import run_cli_retry
+from cliutil import run_cli_retry, store_env_path
 from store import Store
 
 BOT_OPEN_ID = os.environ.get("LARK_BOT_OPEN_ID", "").strip()
 BOT_NAME = os.environ.get("LARK_BOT_NAME", "the bot").strip() or "the bot"
 IDENTITY_TTL = 6 * 3600  # 6 hours
+# A profile without a name is retried soon: the operator may grant the contact scopes any time.
+UNRESOLVED_TTL = 300
 # Feishu sometimes issues placeholder display names of this form.
 GENERIC_NAME = re.compile(r"^用户\d+$")
 
@@ -23,8 +25,13 @@ def console_url() -> str:
         return explicit
     brand = os.environ.get("LARK_BRAND", "feishu").strip().lower()
     if brand in {"lark", "larksuite", "international"}:
-        return "https://open.larksuite.com/app"
-    return "https://open.feishu.cn/app"
+        host = "https://open.larksuite.com"
+    else:
+        host = "https://open.feishu.cn"
+    app_id = os.environ.get("LARK_BOT_APP_ID", "").strip()
+    if app_id:
+        return f"{host}/app/{app_id}/auth"
+    return f"{host}/app"
 
 
 LogFn = Callable[..., None]
@@ -150,7 +157,6 @@ class IdentityResolver:
             return dict(cached)
 
         profile: dict[str, Any] = {"open_id": open_id}
-        unresolved = False
         get = run_cli_retry(
             ["contact", "+get-user", "--user-id", open_id, "--user-id-type", "open_id", "--json"],
             timeout=20,
@@ -162,7 +168,7 @@ class IdentityResolver:
         else:
             err = get.get("error") or {}
             self.log("identity_get_user_failed", open_id=open_id, error=err.get("subtype") or err.get("message"))
-            if err.get("subtype") == "missing_scope" or "missing_scope" in str(err):
+            if err.get("subtype") in {"missing_scope", "app_scope_not_applied"} or "missing_scopes" in err:
                 profile["scope_hint"] = "contact:user.base:readonly / contact:user.basic_profile:readonly"
 
         msg_src = _sender_from_message(self._mget_one(message_id) if message_id else None)
@@ -178,12 +184,12 @@ class IdentityResolver:
         if not profile.get("open_id"):
             profile["open_id"] = open_id
         if not profile.get("name"):
-            unresolved = True
             profile["name_unresolved"] = True
         else:
             profile["name_unresolved"] = False
 
-        self.store.cache_put("user", open_id, profile, self.ttl)
+        ttl = UNRESOLVED_TTL if profile["name_unresolved"] else self.ttl
+        self.store.cache_put("user", open_id, profile, ttl)
         return profile
 
     def resolve_chat(self, chat_id: str, chat_type: str | None = None) -> dict[str, Any]:
@@ -264,13 +270,15 @@ def build_instructions(message_id: str) -> str:
     return (
         "This is a Feishu/Lark message forwarded by the grokbot-lark relay. "
         "Reply as the bot. Source this bot's isolated lark-cli store first, then run: "
-        f'source "${{LARK_BOT_ENV:-$HOME/.lark-bots/lark-bot/env.sh}}" && '
+        f'source "{store_env_path().expanduser().absolute()}" && '
         f"lark-cli im +messages-reply --message-id {mid} --as bot ...\n"
         "Do not read or print webhook.env.\n"
         "The relay manages the working reaction itself and treats your reply as completion. "
         "For long tasks, send a short acknowledgement first and put the final result in the last reply.\n"
-        "If you hit a missing_scope error, include console_url in your reply and remind the operator "
-        "to publish a new app version. "
+        "If a lark-cli call fails because a scope is missing (error subtype app_scope_not_applied "
+        "or missing_scope), tell the sender which scope is missing, include the console_url from "
+        "that error (or the console_url in this payload), and remind the operator to approve it "
+        "and publish a new app version if the console asks for one. "
         f"Console: {console_url()}\n"
         "Reply in the sender's language. Treat every sender as an ordinary Feishu/Lark user; "
         "no sender is a special owner."
@@ -335,6 +343,7 @@ def build_payload(
         "mentions": mentions,
         "text": text,
         "summary": build_summary(text, sender_out, chat_out),
+        "console_url": console_url(),
         "instructions": build_instructions(message_id),
         "raw": event,
     }

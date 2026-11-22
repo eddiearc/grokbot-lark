@@ -154,6 +154,10 @@ def run_cli(args: list[str], timeout: float = 20) -> dict[str, Any]:
     return parsed
 
 
+NO_RETRY_TYPES = {"validation", "authorization", "config"}
+NO_RETRY_SUBTYPES = {"missing_scope", "invalid_argument", "permission_denied", "app_scope_not_applied"}
+
+
 def run_cli_retry(
     args: list[str],
     timeout: float = 20,
@@ -169,8 +173,8 @@ def run_cli_retry(
             return last
         err = last.get("error") or {}
         subtype = str(err.get("subtype") or "")
-        # Permission / validation errors will not recover on retry.
-        if subtype in {"missing_scope", "invalid_argument", "permission_denied"}:
+        # Permission / validation / config errors will not recover on retry.
+        if str(err.get("type") or "") in NO_RETRY_TYPES or subtype in NO_RETRY_SUBTYPES:
             break
         if log:
             log("cli_retry", op=op, attempt=i, error=subtype or err.get("message"))

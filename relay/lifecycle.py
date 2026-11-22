@@ -13,6 +13,7 @@ from store import Store
 WORKING_EMOJIS = ("Typing", "OnIt", "OK")
 ERROR_EMOJI = "ERROR"
 TIMEOUT_SECONDS = 10 * 60
+ABANDON_SECONDS = 6 * 3600
 POLL_INTERVAL = 20
 BOT_OPEN_ID = os.environ.get("LARK_BOT_OPEN_ID", "").strip()
 BOT_APP_ID = os.environ.get("LARK_BOT_APP_ID", "").strip()
@@ -117,6 +118,7 @@ class Lifecycle:
         working_emojis: tuple[str, ...] = WORKING_EMOJIS,
         error_emoji: str = ERROR_EMOJI,
         timeout_seconds: float = TIMEOUT_SECONDS,
+        abandon_seconds: float = ABANDON_SECONDS,
     ):
         self.store = store
         self.ops = ops or CliReactionOps(log=log)
@@ -125,6 +127,7 @@ class Lifecycle:
         self.working_emojis = working_emojis
         self.error_emoji = error_emoji
         self.timeout_seconds = timeout_seconds
+        self.abandon_seconds = abandon_seconds
         self.chosen_working: str | None = None
 
     def start_working(self, message_id: str, chat_id: str, chat_type: str | None = None) -> dict[str, Any]:
@@ -160,6 +163,19 @@ class Lifecycle:
                 if updated:
                     changed.append(updated)
                     self.log("reaction_timeout", message_id=job["message_id"])
+        return changed
+
+    def abandon_stale(self) -> list[dict[str, Any]]:
+        """Stop polling jobs that never got a reply. The reaction stays on the message."""
+        now = self.clock()
+        changed = []
+        for job in self.store.active_jobs():
+            created = float(job.get("created_at") or 0)
+            if created and (now - created) >= self.abandon_seconds:
+                updated = self.store.update_job(job["message_id"], now=now, state="abandoned")
+                if updated:
+                    changed.append(updated)
+                    self.log("reaction_abandoned", message_id=job["message_id"])
         return changed
 
     def complete(self, message_id: str, reason: str = "reply") -> dict[str, Any] | None:
@@ -203,9 +219,13 @@ class Lifecycle:
             sender = msg.get("sender") or {}
             if not _is_bot_sender(sender if isinstance(sender, dict) else None):
                 continue
-            bot_msgs.append(msg)
             parent = msg.get("reply_to") or msg.get("parent_id") or msg.get("root_id")
-            if parent and parent in by_id:
+            if not parent:
+                # Only a bot message that answers no particular message may close
+                # a DM job by position; a reply to another message is that
+                # message's answer.
+                bot_msgs.append(msg)
+            elif parent in by_id:
                 self.complete(parent, reason="poll_reply_to")
                 completed += 1
                 by_id.pop(parent, None)
@@ -256,7 +276,6 @@ class Lifecycle:
     def _later_bot_message(
         self, job: dict[str, Any], bot_msgs: list[dict[str, Any]], used: set[int]
     ) -> dict[str, Any] | None:
-        job_pos = None
         # We don't always have the original message in the list; use created_at slack of 90s
         # because list create_time is minute-precision.
         created = float(job.get("created_at") or 0)
@@ -354,13 +373,14 @@ def _parse_feishu_time(value: Any) -> float | None:
     if isinstance(value, str) and value.isdigit():
         return _parse_feishu_time(int(value))
     if isinstance(value, str):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
             try:
                 dt = datetime.strptime(value, fmt)
-                # The list API often returns naive timestamps; treat them as UTC.
-                return dt.replace(tzinfo=timezone.utc).timestamp()
+                # +chat-messages-list prints create_time in the machine's local
+                # time (minute precision), so a naive string is local, not UTC.
+                return dt.timestamp()
             except ValueError:
                 continue
     return None
