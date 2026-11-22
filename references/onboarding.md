@@ -1,0 +1,129 @@
+# Onboarding in detail
+
+`SKILL.md` gives the six setup steps. This page explains what happens behind them, and what to do
+when a step does not go the usual way.
+
+## What the scan link carries
+
+`scripts/onboard.py app` starts `lark-cli config init --new` in this bot's isolated store, takes
+the verification link it prints, and appends parameters that the Feishu/Lark app-creation page
+understands. These are the parameters of the official SDK's `registerApp` flow
+(`larksuite/node-sdk`, `scene/registration`); the `lark-cli` link opens the same page.
+
+| Parameter | Value | Effect on the page |
+| --- | --- | --- |
+| `name` | `--name` (default: the `--bot` value) | Pre-fills the app name. The operator can still edit it. |
+| `desc` | `--desc` (default: `Grok Bot`) | Pre-fills the description. |
+| `avatar` | each `--avatar` (up to 6) | Offers these images as the app icon. Each must be a public `https` image URL. |
+| `addons` | scopes from `scopes/bot-scopes.txt` plus the event `im.message.receive_v1` | Adds them on top of the page's default template. |
+| `createOnly` | `true` | Hides "use an existing app", so the scan always creates a new app. |
+
+`addons` is compact JSON, gzipped, base64-encoded with the URL-safe alphabet and no padding:
+
+```json
+{"scopes": {"tenant": ["im:message", "…"], "user": []},
+ "events": {"items": {"tenant": ["im.message.receive_v1"], "user": []}}}
+```
+
+After the operator confirms, the page creates the app, adds the bot capability, the scopes and
+the event, creates a version, and publishes it. `lark-cli` receives the app ID and secret and
+stores them in the bot's store. `onboard.py wait` then locks the store to the bot identity
+(`strict-mode bot`), reads the bot's `open_id`, and writes `~/.lark-bots/<bot>/app.json`.
+
+## When the result differs
+
+| What you see | Why | What to do |
+| --- | --- | --- |
+| `scopes` says `partial` | The tenant does not have the "extra config" feature, so the page ignored `addons` and applied only its default template. Scope names the tenant cannot grant are also dropped silently. | The bridge works with the default template. Give the operator `apply_url` once. |
+| `scopes` says `blocked` | The published version lacks the scope or event that `lark-cli event consume` needs, or a tenant admin has not approved the app yet. | Send `apply_url` with its QR image, then run `scopes --wait 600`. Repeat the wait until it clears. |
+| `scopes` says `unknown` | The app could not read its own scope list, usually because `application:application:self_manage` is missing. | Continue. Mention `apply_url` once. |
+| `wait` says `failed`, reason `expired` | The link was not used in time (about an hour at the time of writing). | Run the command on the `next:` line and send the new link. |
+| `wait` says `failed`, reason `denied` | The operator declined on the page. | Ask whether they want to try again before sending a new link. |
+| `qr_png: unavailable (…)` | `lark-cli auth qrcode` failed. | Send the link alone. It works without the image. |
+
+The link is long because it carries every scope, so its QR code is dense. `onboard.py` renders
+it at 1024 px. If the operator cannot scan it, opening the link works the same.
+
+## Adding permissions later
+
+`python3 scripts/onboard.py scopes` compares the app's granted bot scopes with
+`scopes/bot-scopes.txt` and prints two links for whatever is missing:
+
+- `apply_url` is the launcher link (`/page/launcher?clientID=…&addons=…`). One scan; Feishu shows
+  the difference, the operator confirms, and Feishu publishes the new version itself.
+- `fallback_url` is the classic link (`/page/scope-apply?clientID=…&scopes=…`). After confirming
+  there, the operator must create and publish a new app version in the developer console.
+
+To change what the bot asks for, edit `scopes/bot-scopes.txt` (one scope per line) and keep
+`scopes/feishu-scopes-import.json` identical; a test compares the two.
+
+## The operator already has an app
+
+Import it instead of creating one. Ask for the App Secret through a secure secret card (never in
+chat), then pipe it in:
+
+```bash
+printf '%s' "$LARK_APP_SECRET" | python3 scripts/onboard.py app --app-id cli_xxx
+python3 scripts/onboard.py scopes
+```
+
+Add `--brand lark` for an international app. An imported app usually needs the bot capability,
+the `im.message.receive_v1` event over a long connection, and most scopes: `scopes` reports
+`blocked`, and its `apply_url` adds the scopes and the event in one scan.
+
+## Feishu or Lark
+
+`--brand feishu` (default) builds links on `open.feishu.cn`; `--brand lark` builds them on
+`open.larksuite.com`. `larksuite` and `international` are accepted as aliases for `lark`. The
+brand that `lark-cli` records after the scan is the one the relay uses from then on.
+
+## Running a step again
+
+Every command is safe to repeat.
+
+- `app` while a link is pending prints the same link again and starts nothing new.
+- `app` on a configured store prints `status: ready`. Use `--force` to replace the app.
+- `wait` on a configured store finalizes and prints `status: ready`.
+- `relay` on an existing relay directory upgrades the code and keeps `relay.env`, `webhook.env`,
+  logs, and state.
+
+## The webhook
+
+A Grok Bot cannot read the URL or key of its own webhook routine; they are shown only in the
+routine's **Webhook** section on desktop. That makes this the one manual step:
+
+1. The operator pastes the **POST to** URL in chat. The URL is useless without the key.
+2. The operator saves the **key** in a secure secret card named `LARK_BOT_WEBHOOK_KEY`.
+3. `python3 scripts/onboard.py webhook --url '<POST to URL>'` writes
+   `<relay dir>/webhook.env` (mode `600`) from the URL and the `LARK_BOT_WEBHOOK_KEY` environment
+   variable. It never prints either value.
+
+A secret saved through the card is added to the computer's environment, which every bot on the
+machine shares. If the command reports `key: missing`, the secret did not reach your shell:
+
+- a session that was already running when the secret was saved may not see it. Run the command
+  again from a new shell or a new session;
+- or pipe the key from wherever your runtime keeps it:
+  `… | python3 scripts/onboard.py webhook --key-stdin --url '<URL>'`;
+- or have the operator put the key in `<relay dir>/webhook.env` themselves
+  (`LARK_BOT_WEBHOOK_KEY=<key>`).
+
+A second bot on the same machine must use a secret name of its own, passed with `--key-env`, so
+the two keys do not overwrite each other.
+
+The relay re-reads `webhook.env` every two seconds and also accepts `LARK_BOT_WEBHOOK_URL` and
+`LARK_BOT_WEBHOOK_KEY` from its environment when the file leaves them empty. Messages that
+arrived before the webhook was saved wait in the spool and are delivered as soon as it is.
+
+## What setup writes
+
+```
+~/.lark-bots/<bot>/
+  config/ data/ logs/     lark-cli's isolated store (credentials live here, mode 700)
+  env.sh                  exports the three store directories and PATH; no secrets
+  app.json                app_id, brand, bot_open_id, bot_name; no secrets
+~/.lark-relay/
+  relay.env               LARK_BOT_ENV, LARK_BRAND, LARK_BOT_APP_ID, LARK_BOT_OPEN_ID, LARK_BOT_NAME
+  webhook.env             LARK_BOT_WEBHOOK_URL, LARK_BOT_WEBHOOK_KEY (mode 600)
+  *.py *.sh               the relay, copied from relay/
+```
