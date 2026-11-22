@@ -580,6 +580,22 @@ class RelayTests(OnboardCase):
         keys = [l.split("=")[0] for l in text.splitlines() if "=" in l and not l.startswith("#")]
         self.assertEqual(keys[:5], [l.split("=")[0] for l in first.splitlines() if "=" in l and not l.startswith("#")])
 
+    def test_default_relay_dir_follows_the_bot_name(self) -> None:
+        proc = self.run_onboard(["relay", "--bot", "t1"], script=self.script)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(kv(proc.stdout)["relay_dir"], str(self.home / ".lark-relay-t1"))
+        self.assertTrue((self.home / ".lark-relay-t1" / "relay.py").is_file())
+        self.configure("lark-bot", "cli_main")
+        proc = self.run_onboard(["relay"], script=self.script)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(kv(proc.stdout)["relay_dir"], str(self.home / ".lark-relay"))
+        proc = self.run_onboard(
+            ["webhook", "--bot", "t1", "--url", "https://hooks.example.com/t1"],
+            env={"LARK_BOT_WEBHOOK_KEY": "k-t1"}, script=self.script,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(kv(proc.stdout)["file"], str(self.home / ".lark-relay-t1" / "webhook.env"))
+
     def test_relay_dir_of_another_bot_is_refused(self) -> None:
         self.relay()
         before = (self.relay_dir / "relay.env").read_text()

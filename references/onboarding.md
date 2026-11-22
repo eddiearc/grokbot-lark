@@ -42,7 +42,9 @@ stores them in the bot's store. `onboard.py wait` then locks the store to the bo
 | `qr_png: unavailable (…)` | `lark-cli auth qrcode` failed. | Send the link alone. It works without the image. |
 
 The link is long because it carries every scope, so its QR code is dense. `onboard.py` renders
-it at 1024 px. If the operator cannot scan it, opening the link works the same.
+it at 1024 px. It still decodes when shrunk to a quarter of that, but a phone camera needs it
+shown large: if a thumbnail does not scan, the operator opens the image at full size, or opens
+the link, which works the same.
 
 ## Adding permissions later
 

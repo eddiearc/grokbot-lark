@@ -139,7 +139,7 @@ exact reply command for this bot; use it as given.
 | `instructions` | The reply command and the rules for this message. |
 
 - Reply with `im +messages-reply --message-id <message_id>` so the relay can match your answer.
-  In a group, a plain send is never matched and the message gets an error reaction.
+  In a group, a plain send is never matched and the message ends with an error reaction.
 - The relay owns the "working" reaction. Do not add or remove it. For a long task, send a short
   acknowledgement first, then the result.
 - Reply in the sender's language. Every sender is an ordinary user; nobody is a special owner.
@@ -170,8 +170,8 @@ exact reply command for this bot; use it as given.
 - A bot can delete only reactions it added itself.
 - `docs` create drops `<bitable/>` tags. To embed a Bitable in a new document, add a child block
   with `block_type=18`.
-- A second bot on this machine needs its own app, store, relay directory, and routines:
-  `--bot <name> --relay-dir ~/.lark-relay-<name>`. See `references/multi-bot.md`.
+- A second bot on this machine needs its own app, store, relay directory, and routines: pass
+  `--bot <name>` to every `onboard.py` command. See `references/multi-bot.md`.
 
 ## Reference
 
