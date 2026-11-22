@@ -224,8 +224,8 @@ class PayloadTests(unittest.TestCase):
     def test_instructions_are_english_and_have_no_owner(self):
         text = build_instructions("msg_abc")
         self.assertIn("forwarded by the grokbot-lark relay", text)
-        self.assertIn("lark-bot-cli im +messages-reply --message-id msg_abc", text)
-        self.assertIn("lark-bot-cli", text)
+        self.assertIn("lark-cli im +messages-reply --message-id msg_abc --as bot", text)
+        self.assertNotIn("lark-bot-cli", text)
         self.assertIn("webhook.env", text)
         self.assertIn("console_url", text)
         self.assertIn("publish", text.lower())

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run lark-bot-cli (forces --as bot) and parse JSON envelopes."""
+"""Run lark-cli as bot and parse JSON envelopes."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 BASE = Path(__file__).resolve().parent
-CLI = BASE / "lark-bot-cli"
 HOME_BIN = str(Path.home() / ".local" / "bin")
 
 
@@ -57,13 +56,25 @@ def find_field(obj: Any, key: str) -> Any:
     return None
 
 
+def _lark_cli() -> str:
+    home = Path.home() / ".local" / "bin" / "lark-cli"
+    if home.is_file():
+        return str(home)
+    return "lark-cli"
+
+
+def _with_as_bot(args: list[str]) -> list[str]:
+    if "--as" in args or any(str(a).startswith("--as=") for a in args):
+        return list(args)
+    return [*args, "--as", "bot"]
+
+
 def run_cli(args: list[str], timeout: float = 20) -> dict[str, Any]:
-    """Run lark-bot-cli and return the parsed JSON object (may include ok/error)."""
-    if not CLI.is_file():
-        return {"ok": False, "error": {"message": "lark-bot-cli missing"}}
+    """Run lark-cli ... --as bot and return the parsed JSON object (may include ok/error)."""
+    cmd = [_lark_cli(), *_with_as_bot(args)]
     try:
         proc = subprocess.run(
-            [str(CLI), *args],
+            cmd,
             capture_output=True,
             timeout=timeout,
             env=_env(),

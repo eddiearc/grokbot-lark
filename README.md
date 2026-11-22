@@ -4,10 +4,35 @@ A [Grok Bot](https://grok.com) skill that bridges **Feishu** (China) or **Lark**
 (international) to a handler bot over a long-lived [`lark-cli`](https://www.npmjs.com/package/@larksuite/cli)
 event connection.
 
+The bot that owns this skill has **two separate paths**:
+
+```
+Inbound path (relay wakes the bot):
+
+  Feishu/Lark  --long connection-->  lark-cli event consume im.message.receive_v1 --as bot
+                                 -->  relay.py  --webhook-->  handler bot
+
+Outbound path (the bot calls lark-cli itself):
+
+  handler bot  --  lark-cli im +messages-reply --message-id <id> --as bot  -->  Feishu/Lark
+               --  lark-cli docs ... --as bot
+               --  lark-cli base ... --as bot
+```
+
 The relay on your machine consumes `im.message.receive_v1` as the bot, adds a
 working reaction, resolves who sent the message, and POSTs a structured payload
-to the handler bot's webhook routine. Replies go out only through
-`lark-bot-cli` (`--as bot`). The handler never uses your user authorization.
+to the handler bot's webhook routine. The handler then calls
+`lark-cli ... --as bot` itself (reply, docs, Bitable, and so on). There is no
+wrapper around `lark-cli`. Identity is locked with:
+
+```bash
+lark-cli config strict-mode bot --global
+# If a user is already logged in:
+lark-cli auth logout
+```
+
+Do not log in a user on that machine. Confirm with `lark-cli whoami`
+(identity should be `bot`, source `strict_mode`).
 
 Start from [`SKILL.md`](SKILL.md) and the templates in `templates/`.
 
@@ -16,7 +41,7 @@ Start from [`SKILL.md`](SKILL.md) and the templates in `templates/`.
 | Path | Purpose |
 | --- | --- |
 | `SKILL.md` | Step-by-step skill for a Grok Bot (or a human operator) |
-| `relay/` | Long-connection consumer, supervisor, health `status.sh`, bot-only CLI wrapper, reaction lifecycle, identity enrichment |
+| `relay/` | Long-connection consumer, supervisor, health `status.sh`, reaction lifecycle, identity enrichment |
 | `scripts/scope_link.py` | Build a one-click bot-scope apply URL from `scopes/bot-scopes.txt` |
 | `scopes/bot-scopes.txt` | Default bot (tenant) scopes, including contact scopes |
 | `scopes/feishu-scopes-import.json` | Same scopes in a console batch-import shape |
@@ -32,11 +57,11 @@ Start from [`SKILL.md`](SKILL.md) and the templates in `templates/`.
    python3 scripts/scope_link.py --app-id <APP_ID> --brand feishu
    ```
 
-4. Optional: user OAuth with `lark-cli auth login --domain im,docs,drive,wiki,markdown,base,sheets --no-wait --json` (the handler must still use the bot wrapper).
+4. Lock the CLI to the bot: `lark-cli config strict-mode bot --global`. Do not log in a user (or run `lark-cli auth logout` if one is already logged in).
 5. Create a webhook routine in the **handler bot's** chat (`templates/handler-routine-prompt.md`). Put the URL and key in `~/.lark-relay/webhook.env` (mode `600`).
-6. Copy `relay/` to `~/.lark-relay` and start `supervisor.sh`. It runs a single `lark-bot-cli event consume im.message.receive_v1 --as bot` and keeps stdin open.
+6. Copy `relay/` to `~/.lark-relay` and start `supervisor.sh`. It runs a single inbound `lark-cli event consume im.message.receive_v1 --as bot` and keeps stdin open.
 7. Add a health-check routine every 30 minutes (`templates/health-check-routine-prompt.md`). It stays silent when healthy.
-8. DM the bot to test. A working reaction should appear immediately; it is removed when the bot replies.
+8. DM the bot to test. A working reaction should appear immediately; the handler replies with `lark-cli im +messages-reply --message-id <id> --as bot`; the reaction is then removed.
 
 ## Contact scopes and identity
 
@@ -84,8 +109,9 @@ MIT. See [LICENSE](LICENSE).
 
 ## 中文简介
 
-`grokbot-lark` 是一套给 Grok Bot 用的飞书 / Lark 桥接技能：在你的机器上用
-`lark-cli` 长连接收取消息，由中继程序立刻加上「处理中」表情、解析发送者身份，
-再把结构化内容转发到处理机器人的 webhook。回复只通过 `lark-bot-cli`、只用机器人身份，不使用安装者的用户授权。
+`grokbot-lark` 是一套给 Grok Bot 用的飞书 / Lark 桥接技能。机器人有两条互不影响的路径：
 
-默认权限列表里包含通讯录相关权限，用于补充发送者的邮箱、英文名和员工 ID；没有这些权限时会降级，消息仍会转发。详细步骤、注意点和模板见上面的英文说明与 `SKILL.md`。
+- **入站**：机器上的中继用 `lark-cli event consume ... --as bot` 长连接收消息，加上「处理中」表情、解析发送者身份，再通过 webhook 唤醒处理机器人。
+- **出站**：处理机器人自己调用 `lark-cli ... --as bot` 回复或操作文档、多维表格等，例如 `lark-cli im +messages-reply --message-id <id> --as bot`。
+
+身份锁在 CLI 层：`lark-cli config strict-mode bot --global`，并且不要登录用户（若已登录则 `lark-cli auth logout`）。没有额外的包装器。详细步骤、注意点和模板见上面的英文说明与 `SKILL.md`。

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -31,7 +32,7 @@ SPOOL_PATH = SPOOL_DIR / "pending.jsonl"
 STATE_DB = BASE / "state.db"
 BOT_OPEN_ID = os.environ.get("LARK_BOT_OPEN_ID", "").strip()
 CONSUME_CMD = [
-    str(BASE / "lark-bot-cli"),
+    "lark-cli",
     "event",
     "consume",
     "im.message.receive_v1",
@@ -459,8 +460,8 @@ def main() -> int:
     if home_bin not in os.environ["PATH"].split(":"):
         os.environ["PATH"] = home_bin + ":" + os.environ["PATH"]
 
-    if not (BASE / "lark-bot-cli").is_file():
-        log("missing_wrapper", path=str(BASE / "lark-bot-cli"))
+    if not shutil.which("lark-cli"):
+        log("missing_lark_cli")
         return 2
 
     global store, life, resolver
