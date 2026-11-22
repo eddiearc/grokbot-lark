@@ -35,6 +35,7 @@ SCOPES_FILE = ROOT / "scopes" / "bot-scopes.txt"
 RELAY_SRC = ROOT / "relay"
 
 EVENT = "im.message.receive_v1"
+DEFAULT_BOT = "lark-bot"
 BOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 URL_RE = re.compile(r"https?://\S+user_code=\S+")
 QR_LINE_RE = re.compile("^[\\s▀-▟█#.■□░▒▓]*$")
@@ -99,6 +100,14 @@ def brand_arg(value: str) -> str:
         return scope_link.normalize_brand(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc))
+
+
+def relay_dir_for(args: argparse.Namespace) -> Path:
+    """--relay-dir, else ~/.lark-relay for the default bot and ~/.lark-relay-<bot> for any other."""
+    if args.relay_dir:
+        return Path(os.path.expanduser(args.relay_dir)).resolve()
+    name = ".lark-relay" if args.bot == DEFAULT_BOT else f".lark-relay-{args.bot}"
+    return (Path.home() / name).resolve()
 
 
 def next_cmd(name: str, bot: str, extra: str = "") -> str:
@@ -885,7 +894,7 @@ def cmd_relay(args: argparse.Namespace) -> int:
     store = Store(args.bot)
     store.cli_path()
     store.ensure()
-    relay_dir = Path(os.path.expanduser(args.relay_dir)).resolve()
+    relay_dir = relay_dir_for(args)
     info = load_app(store)
     if not info.get("bot_open_id") or info["bot_open_id"] == "unknown":
         open_id, name = store.bot_info()
@@ -983,7 +992,7 @@ def cmd_relay(args: argparse.Namespace) -> int:
 
 
 def cmd_webhook(args: argparse.Namespace) -> int:
-    relay_dir = Path(os.path.expanduser(args.relay_dir)).resolve()
+    relay_dir = relay_dir_for(args)
     path = relay_dir / "webhook.env"
     current = read_env_file(path)
 
@@ -1052,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.required = True
 
     def common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--bot", type=bot_name_arg, default="lark-bot",
+        p.add_argument("--bot", type=bot_name_arg, default=DEFAULT_BOT,
                        help="bot/store name (default: lark-bot); store is ~/.lark-bots/<bot>")
 
     p = sub.add_parser(
@@ -1102,7 +1111,8 @@ def build_parser() -> argparse.ArgumentParser:
         "settings) and an empty webhook.env if missing.",
     )
     common(p)
-    p.add_argument("--relay-dir", default="~/.lark-relay", help="relay directory (default: ~/.lark-relay)")
+    p.add_argument("--relay-dir", default=None,
+                   help="relay directory (default: ~/.lark-relay; ~/.lark-relay-<bot> when --bot is given)")
     p.add_argument("--start", action="store_true", help="restart the relay after installing")
     p.set_defaults(func=cmd_relay)
 
@@ -1113,7 +1123,9 @@ def build_parser() -> argparse.ArgumentParser:
         "from the environment variable named by --key-env, or from stdin with --key-stdin. "
         "Exit 0 saved, 3 incomplete.",
     )
-    p.add_argument("--relay-dir", default="~/.lark-relay", help="relay directory (default: ~/.lark-relay)")
+    common(p)
+    p.add_argument("--relay-dir", default=None,
+                   help="relay directory (default: ~/.lark-relay; ~/.lark-relay-<bot> when --bot is given)")
     p.add_argument("--url", help="webhook URL (https://...); falls back to env LARK_BOT_WEBHOOK_URL, then the file")
     p.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
     p.add_argument("--key-env", default="LARK_BOT_WEBHOOK_KEY", metavar="NAME", type=env_name_arg,

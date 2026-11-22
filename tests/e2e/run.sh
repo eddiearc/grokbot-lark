@@ -27,7 +27,7 @@ mkdir -p "${HOME}/.local/bin" "${FAKE_CTRL}"
 cp "${HERE}/fake-lark-cli.py" "${HOME}/.local/bin/lark-cli"
 chmod +x "${HOME}/.local/bin/lark-cli"
 export PATH="${HOME}/.local/bin:${PATH}"
-RELAY="${HOME}/.lark-relay"
+RELAY="${HOME}/.lark-relay-e2e"   # a bot other than the default gets a relay directory of its own
 HOOK_PID=""
 fail=0
 
@@ -69,7 +69,7 @@ python3 scripts/onboard.py relay --bot e2e > "${WORK}/relay.out" 2>&1
 rc=$?
 check "relay installed, webhook not configured yet" '[[ ${rc} -eq 0 ]] && grep -q "^status: installed" "${WORK}/relay.out" && grep -q "^webhook: not configured" "${WORK}/relay.out"'
 check "relay.env carries the bot identity" 'grep -q "^LARK_BOT_OPEN_ID=ou_bot" "${RELAY}/relay.env" && grep -q "^LARK_BOT_ENV=${HOME}/.lark-bots/e2e/env.sh" "${RELAY}/relay.env"'
-LARK_BOT_WEBHOOK_KEY="Bearer test-key-123" python3 scripts/onboard.py webhook --url "https://example.invalid/hook" > "${WORK}/webhook.out" 2>&1
+LARK_BOT_WEBHOOK_KEY="Bearer test-key-123" python3 scripts/onboard.py webhook --bot e2e --url "https://example.invalid/hook" > "${WORK}/webhook.out" 2>&1
 rc=$?
 check "webhook saved without printing the key" '[[ ${rc} -eq 0 ]] && grep -q "^status: saved" "${WORK}/webhook.out" && ! grep -q "test-key-123" "${WORK}/webhook.out"'
 check "webhook.env is private and the Bearer prefix is gone" '[[ "$(stat -c %a "${RELAY}/webhook.env")" == "600" ]] && grep -q "^LARK_BOT_WEBHOOK_KEY=test-key-123$" "${RELAY}/webhook.env"'

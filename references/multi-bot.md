@@ -15,21 +15,25 @@ process that knows the path can read another bot's store.
 
 ## Setting up a second bot
 
-Run the usual steps with a name and a relay directory of its own:
+Run the usual steps with `--bot <name>` on every command:
 
 ```bash
-python3 scripts/onboard.py app   --bot sales-bot --name "<its display name>"
-python3 scripts/onboard.py wait  --bot sales-bot
-python3 scripts/onboard.py scopes --bot sales-bot
-python3 scripts/onboard.py relay --bot sales-bot --relay-dir ~/.lark-relay-sales-bot --start
-python3 scripts/onboard.py webhook --relay-dir ~/.lark-relay-sales-bot \
+python3 scripts/onboard.py app     --bot sales-bot --name "<its display name>"
+python3 scripts/onboard.py wait    --bot sales-bot
+python3 scripts/onboard.py scopes  --bot sales-bot
+python3 scripts/onboard.py relay   --bot sales-bot --start
+python3 scripts/onboard.py webhook --bot sales-bot \
   --key-env LARK_BOT_WEBHOOK_KEY_SALES_BOT --url '<POST to URL>'
 ```
 
+The default bot (`lark-bot`) uses `~/.lark-bots/lark-bot` and `~/.lark-relay`. Any other name
+gets `~/.lark-bots/<name>` and `~/.lark-relay-<name>`; `--relay-dir` overrides the latter.
+`onboard.py relay` refuses to install into a relay directory that already belongs to another
+bot.
+
 Saved secrets are environment variables of the whole computer, so ask for this bot's webhook key
 under a name of its own (here `LARK_BOT_WEBHOOK_KEY_SALES_BOT`) and pass that name with
-`--key-env`. `onboard.py relay` refuses to install into a relay directory that already belongs
-to another bot.
+`--key-env`.
 
 In that bot's two routine instructions, replace `~/.lark-relay` with its relay directory. The
 payload's `instructions` field already names the right store env file, because each relay reads
