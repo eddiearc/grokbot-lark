@@ -263,7 +263,8 @@ def build_instructions(message_id: str) -> str:
     mid = message_id or "<message_id>"
     return (
         "This is a Feishu/Lark message forwarded by the grokbot-lark relay. "
-        "Reply as the bot with: "
+        "Reply as the bot. Source this bot's isolated lark-cli store first, then run: "
+        f'source "${{LARK_BOT_ENV:-$HOME/.lark-bots/lark-bot/env.sh}}" && '
         f"lark-cli im +messages-reply --message-id {mid} --as bot ...\n"
         "Do not read or print webhook.env.\n"
         "The relay manages the working reaction itself and treats your reply as completion. "

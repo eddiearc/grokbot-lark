@@ -225,6 +225,8 @@ class PayloadTests(unittest.TestCase):
         text = build_instructions("msg_abc")
         self.assertIn("forwarded by the grokbot-lark relay", text)
         self.assertIn("lark-cli im +messages-reply --message-id msg_abc --as bot", text)
+        self.assertIn("source", text)
+        self.assertIn("lark-bot/env.sh", text)
         self.assertNotIn("lark-bot-cli", text)
         self.assertIn("webhook.env", text)
         self.assertIn("console_url", text)

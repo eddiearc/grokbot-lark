@@ -5,7 +5,7 @@ messages at any time.
 
 ## What to do
 
-1. Run `~/.lark-relay/status.sh` (adjust the path if the relay lives elsewhere).
+1. Run `~/.lark-relay/status.sh` (adjust the path if the relay lives elsewhere). It sources `${LARK_BOT_ENV:-$HOME/.lark-bots/lark-bot/env.sh}` when that file exists, so event status uses this bot's isolated store.
 2. If the supervisor, `relay.py`, and the single `event consume` process are up,
    and there is no forwarding error that needs attention, **stay silent**. Do
    not message the operator when everything is healthy.

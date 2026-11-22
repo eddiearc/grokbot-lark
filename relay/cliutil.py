@@ -14,11 +14,63 @@ BASE = Path(__file__).resolve().parent
 HOME_BIN = str(Path.home() / ".local" / "bin")
 
 
+ALLOWED_STORE_KEYS = {
+    "LARKSUITE_CLI_CONFIG_DIR",
+    "LARKSUITE_CLI_DATA_DIR",
+    "LARKSUITE_CLI_LOG_DIR",
+    "PATH",
+}
+
+DEFAULT_STORE_ENV = Path.home() / ".lark-bots" / "lark-bot" / "env.sh"
+
+
+def store_env_path() -> Path:
+    override = os.environ.get("LARK_BOT_ENV", "").strip()
+    return Path(override) if override else DEFAULT_STORE_ENV
+
+
+def _expand_store_value(val: str, env: dict[str, str]) -> str:
+    home = str(Path.home())
+    val = val.strip().strip("'").strip('"')
+    val = val.replace("${HOME}", home).replace("$HOME", home)
+    path = env.get("PATH", "")
+    val = val.replace("${PATH}", path).replace("$PATH", path)
+    return val
+
+
+def load_store_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
+    """Apply dir/PATH exports from a bot store env file. Ignores other keys."""
+    if not path.is_file():
+        return env
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return env
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key not in ALLOWED_STORE_KEYS:
+            continue
+        env[key] = _expand_store_value(val, env)
+    return env
+
+
 def _env() -> dict[str, str]:
     env = os.environ.copy()
     path = env.get("PATH", "")
     if HOME_BIN not in path.split(":"):
         env["PATH"] = HOME_BIN + ":" + path
+    # If the supervisor already exported the dir vars, keep them.
+    # Otherwise load the per-bot store env file (dir vars only; no secrets).
+    if not env.get("LARKSUITE_CLI_CONFIG_DIR"):
+        load_store_env_file(store_env_path(), env)
+        if HOME_BIN not in env.get("PATH", "").split(":"):
+            env["PATH"] = HOME_BIN + ":" + env.get("PATH", "")
     return env
 
 

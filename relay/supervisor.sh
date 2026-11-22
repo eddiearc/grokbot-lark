@@ -4,6 +4,16 @@
 # (required for unbounded consume; do not attach consume itself to /dev/null).
 set -eu
 export PATH="${HOME}/.local/bin:${PATH}"
+# Per-bot isolated lark-cli store (CONFIG_DIR/DATA_DIR/LOG_DIR). Override path
+# with LARK_BOT_ENV. The file must contain only those dir vars and PATH, never
+# secrets. If the file is missing, lark-cli falls back to ~/.lark-cli.
+LARK_BOT_ENV="${LARK_BOT_ENV:-${HOME}/.lark-bots/lark-bot/env.sh}"
+if [[ -f "${LARK_BOT_ENV}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${LARK_BOT_ENV}"
+  set +a
+fi
 BASE="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${BASE}/logs"
 STATE_DIR="${BASE}/state"

@@ -2,6 +2,16 @@
 # Health check for the Feishu inbound relay. Does not print secrets.
 set -u
 export PATH="${HOME}/.local/bin:${PATH}"
+# Per-bot isolated lark-cli store (CONFIG_DIR/DATA_DIR/LOG_DIR). Override path
+# with LARK_BOT_ENV. The file must contain only those dir vars and PATH, never
+# secrets. If the file is missing, lark-cli falls back to ~/.lark-cli.
+LARK_BOT_ENV="${LARK_BOT_ENV:-${HOME}/.lark-bots/lark-bot/env.sh}"
+if [[ -f "${LARK_BOT_ENV}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${LARK_BOT_ENV}"
+  set +a
+fi
 BASE="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${BASE}/logs"
 STATE_DIR="${BASE}/state"
@@ -13,6 +23,12 @@ rc=0
 
 echo "lark-relay status"
 echo "dir: ${BASE}"
+
+STORE="${LARKSUITE_CLI_CONFIG_DIR:-${HOME}/.lark-cli}"
+echo "lark-cli store: ${STORE}"
+if [[ -n "${LARK_BOT_ENV:-}" ]]; then
+  echo "lark-cli env file: ${LARK_BOT_ENV}"
+fi
 
 if [[ -f "${PID_FILE}" ]]; then
   spid="$(cat "${PID_FILE}" 2>/dev/null || true)"

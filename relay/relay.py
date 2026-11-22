@@ -455,10 +455,17 @@ def handle_signal(signum, _frame) -> None:
 
 def main() -> int:
     global proc
+    from cliutil import _env as _lark_cli_env
+
     os.environ.setdefault("PATH", "")
-    home_bin = str(Path.home() / ".local" / "bin")
-    if home_bin not in os.environ["PATH"].split(":"):
-        os.environ["PATH"] = home_bin + ":" + os.environ["PATH"]
+    for key, val in _lark_cli_env().items():
+        if key in {
+            "PATH",
+            "LARKSUITE_CLI_CONFIG_DIR",
+            "LARKSUITE_CLI_DATA_DIR",
+            "LARKSUITE_CLI_LOG_DIR",
+        }:
+            os.environ[key] = val
 
     if not shutil.which("lark-cli"):
         log("missing_lark_cli")
