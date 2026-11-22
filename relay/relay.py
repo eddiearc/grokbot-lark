@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -43,6 +44,9 @@ SEEN_MAX = 50000
 POST_TIMEOUT = 20
 POST_RETRIES = 3
 FLUSH_INTERVAL_SEC = 2.0
+# flush_spool runs in both the main loop and the reader thread; append_spool in
+# the reader thread. One lock keeps a rewrite from overwriting a concurrent append.
+SPOOL_LOCK = threading.RLock()
 
 for d in (LOG_DIR, STATE_DIR, SPOOL_DIR):
     d.mkdir(mode=0o700, exist_ok=True)
@@ -60,29 +64,41 @@ def log(msg: str, **fields: Any) -> None:
         f.write(line + "\n")
 
 
+BEARER_PREFIX = re.compile(r"^(authorization:\s*)?bearer\s+", re.IGNORECASE)
+
+
+def _clean_key(value: str) -> str:
+    return BEARER_PREFIX.sub("", value.strip()).strip()
+
+
 def load_webhook() -> tuple[str, str] | None:
-    """Return (url, key) if both are non-empty; never log values."""
-    if not WEBHOOK_ENV.is_file():
-        return None
+    """Return (url, key) if both are non-empty; never log values.
+
+    webhook.env wins; the environment variables of the same names fill in any
+    value it leaves empty.
+    """
     url = key = ""
-    try:
-        text = WEBHOOK_ENV.read_text(encoding="utf-8")
-    except OSError as e:
-        log("webhook_env_unreadable", error=str(e))
-        return None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        k, _, v = line.partition("=")
-        k = k.strip()
-        v = v.strip().strip("'").strip('"')
-        if k == "LARK_BOT_WEBHOOK_URL":
-            url = v
-        elif k == "LARK_BOT_WEBHOOK_KEY":
-            key = v
+    if WEBHOOK_ENV.is_file():
+        try:
+            text = WEBHOOK_ENV.read_text(encoding="utf-8")
+        except OSError as e:
+            log("webhook_env_unreadable", error=str(e))
+            text = ""
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip().strip("'").strip('"')
+            if k == "LARK_BOT_WEBHOOK_URL":
+                url = v
+            elif k == "LARK_BOT_WEBHOOK_KEY":
+                key = v
+    url = url.strip() or os.environ.get("LARK_BOT_WEBHOOK_URL", "").strip()
+    key = _clean_key(key) or _clean_key(os.environ.get("LARK_BOT_WEBHOOK_KEY", ""))
     if url and key:
         return url, key
     return None
@@ -226,6 +242,7 @@ def poll_completions() -> None:
         except Exception as e:
             log("poll_chat_failed", chat_id=chat_id, error=type(e).__name__)
     life.mark_timeouts()
+    life.abandon_stale()
 
 
 def post_webhook(url: str, key: str, body: dict[str, Any]) -> bool:
@@ -260,19 +277,25 @@ def post_webhook(url: str, key: str, body: dict[str, Any]) -> bool:
 
 
 def append_spool(body: dict[str, Any]) -> None:
-    SPOOL_PATH.parent.mkdir(mode=0o700, exist_ok=True)
-    line = json.dumps(body, ensure_ascii=False, default=str)
-    with SPOOL_PATH.open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    try:
-        SPOOL_PATH.chmod(0o600)
-    except OSError:
-        pass
+    with SPOOL_LOCK:
+        SPOOL_PATH.parent.mkdir(mode=0o700, exist_ok=True)
+        line = json.dumps(body, ensure_ascii=False, default=str)
+        with SPOOL_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            SPOOL_PATH.chmod(0o600)
+        except OSError:
+            pass
 
 
 def flush_spool() -> None:
+    with SPOOL_LOCK:
+        _flush_spool_locked()
+
+
+def _flush_spool_locked() -> None:
     creds = load_webhook()
     if not creds or not SPOOL_PATH.is_file():
         return
@@ -297,6 +320,10 @@ def flush_spool() -> None:
             continue
         remaining = items[idx:]
         break
+    if remaining == items:
+        # Nothing was posted and nothing was dropped: leave the file (and its
+        # modification time, which status.sh reads) untouched.
+        return
     tmp = SPOOL_PATH.with_suffix(".tmp")
     if remaining:
         tmp.write_text("\n".join(remaining) + "\n", encoding="utf-8")
@@ -347,7 +374,7 @@ def handle_event(event: dict[str, Any]) -> None:
     if life is not None:
         sender_id = str(event.get("sender_id") or "").strip()
         sender_type = str(event.get("sender_type") or "").strip().lower()
-        if sender_id == BOT_OPEN_ID or sender_type in {"bot", "app"}:
+        if (sender_id and sender_id == BOT_OPEN_ID) or sender_type in {"bot", "app"}:
             life.handle_possible_bot_event(event)
             if mid:
                 seen.add(mid)
