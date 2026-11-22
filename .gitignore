@@ -1,0 +1,16 @@
+# Runtime and secrets — never commit these
+webhook.env
+*.env
+!templates/*.env.example
+state.db
+state.db-shm
+state.db-wal
+state/
+logs/
+spool/
+__pycache__/
+*.py[cod]
+*.tgz
+.DS_Store
+.idea/
+.vscode/
