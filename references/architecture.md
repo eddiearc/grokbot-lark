@@ -86,6 +86,7 @@ Every 20 seconds the relay lists the last 50 messages of each chat that has an o
 (`im +chat-messages-list`) and looks for the bot's answer:
 
 - a bot message whose `reply_to` is the job's message closes that job;
+- inside a thread, a bot message that comes after the job's message closes that job;
 - in a direct message only, a later bot message that replies to nothing closes the oldest job.
 
 So the reaction disappears up to 20 seconds after the reply. After a restart the relay re-reads
@@ -112,9 +113,9 @@ its jobs from `state.db` and puts back a reaction that went missing.
 
 ## Limits
 
-- **Replies inside a thread are not seen in groups.** `lark-cli` reports a threaded message with
-  `thread_id` and no `reply_to`, so a group answer posted in a thread (or in a topic group) is
-  not matched and the message ends with the `ERROR` reaction even though the reply was sent.
+- **Long threads.** `lark-cli` lists only the first 50 messages of a thread. An answer posted
+  deeper than that in a thread (or in a topic group) is not matched, and the message ends with
+  the `ERROR` reaction even though the reply was sent.
 - **Any app's reply counts.** In a group with several bots, another bot replying to the same
   message closes this bot's job.
 - **One message at a time.** Events are handled in order. While a webhook POST is retrying,

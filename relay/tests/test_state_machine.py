@@ -231,6 +231,67 @@ class StateMachineTests(unittest.TestCase):
         self.assertEqual(a["reaction_id"], b["reaction_id"])
         self.assertEqual(len(self.ops.created), 1)
 
+    BOT = {"id": "example-bot-app-id", "sender_type": "app"}
+    USER = {"id": "user_example", "sender_type": "user"}
+
+    def test_thread_reply_completes_the_thread_root(self):
+        # lark-cli lists a threaded message with thread_id and no reply_to;
+        # the thread's messages hang off the root as thread_replies.
+        self.life.start_working("msg_root", "chat_1", "group")
+        n = self.life.apply_listed_messages(
+            "chat_1",
+            [
+                {
+                    "message_id": "msg_root",
+                    "sender": self.USER,
+                    "thread_id": "omt_1",
+                    "thread_replies": [
+                        {"message_id": "msg_root", "sender": self.USER, "thread_id": "omt_1"},
+                        {"message_id": "msg_bot", "sender": self.BOT, "thread_id": "omt_1"},
+                    ],
+                }
+            ],
+            "group",
+        )
+        self.assertEqual(n, 1)
+        self.assertEqual(self.store.get_job("msg_root")["state"], "done")
+
+    def test_thread_reply_completes_a_message_inside_the_thread(self):
+        self.life.start_working("msg_mention", "chat_1", "group")
+        thread = {
+            "message_id": "msg_topic",
+            "sender": self.USER,
+            "thread_id": "omt_1",
+            "thread_replies": [
+                {"message_id": "msg_old_bot", "sender": self.BOT, "thread_id": "omt_1"},
+                {"message_id": "msg_mention", "sender": self.USER, "thread_id": "omt_1"},
+            ],
+        }
+        # A bot message before the mention is not its answer.
+        self.assertEqual(self.life.apply_listed_messages("chat_1", [thread], "group"), 0)
+        self.assertEqual(self.store.get_job("msg_mention")["state"], "pending")
+        thread["thread_replies"].append({"message_id": "msg_bot", "sender": self.BOT, "thread_id": "omt_1"})
+        self.assertEqual(self.life.apply_listed_messages("chat_1", [thread], "group"), 1)
+        self.assertEqual(self.store.get_job("msg_mention")["state"], "done")
+
+    def test_bot_message_in_another_thread_does_not_complete(self):
+        self.life.start_working("msg_mention", "chat_1", "group")
+        n = self.life.apply_listed_messages(
+            "chat_1",
+            [
+                {"message_id": "msg_mention", "sender": self.USER},
+                {
+                    "message_id": "msg_topic",
+                    "sender": self.USER,
+                    "thread_id": "omt_2",
+                    "thread_replies": [{"message_id": "msg_bot", "sender": self.BOT, "thread_id": "omt_2"}],
+                },
+            ],
+            "group",
+        )
+        self.assertEqual(n, 0)
+        self.assertEqual(self.store.get_job("msg_mention")["state"], "pending")
+
 
     def test_p2p_fallback_ignores_bot_replies_to_other_messages(self):
         self.life.start_working("msg_a", "chat_1", "p2p")

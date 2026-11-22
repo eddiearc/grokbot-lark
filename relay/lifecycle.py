@@ -229,6 +229,24 @@ class Lifecycle:
                 self.complete(parent, reason="poll_reply_to")
                 completed += 1
                 by_id.pop(parent, None)
+        # Threads. lark-cli lists a threaded message with thread_id and no
+        # reply_to, and attaches the thread's messages (oldest first, at most
+        # 50) to its root as thread_replies. Inside one thread, a bot message
+        # that comes after the job's message is its answer.
+        for root in messages:
+            replies = root.get("thread_replies")
+            if not by_id or not isinstance(replies, list):
+                continue
+            bot_seen = False
+            for item in reversed([root] + [r for r in replies if isinstance(r, dict)]):
+                sender = item.get("sender")
+                if _is_bot_sender(sender if isinstance(sender, dict) else None):
+                    bot_seen = True
+                elif bot_seen and item.get("message_id") in by_id:
+                    mid = item["message_id"]
+                    self.complete(mid, reason="poll_thread_reply")
+                    completed += 1
+                    by_id.pop(mid, None)
         if (chat_type or (active[0].get("chat_type") if active else "")) == "p2p" and by_id:
             # Any later bot message in p2p closes the oldest remaining job.
             # Ignore bot history that predates the job (use message_position if present).

@@ -26,7 +26,7 @@ Start with the health report. It ends with `status: healthy`, or with `status: u
 | The bot cannot be found in Feishu/Lark. | The app is not published yet (a tenant admin must approve it), or its availability range does not include that person. | The operator approves the app or widens the range in the developer console. |
 | A DM gets no reaction at all. | The relay is down, or the app lacks the message scope or event. | `status.sh`, then `python3 scripts/onboard.py scopes`. |
 | A reaction appears but no reply comes; `ERROR` after 10 minutes. | The webhook did not start a run, or the handler failed. | Look for `forwarded` or `webhook_post_failed` in `logs/relay.jsonl`, then at the handler routine's run history. |
-| The reply arrived but the message still got `ERROR`. | The answer was not sent with `im +messages-reply --message-id <id>`, or it was posted inside a thread in a group. | Reply to the message directly. See "Limits" in `architecture.md`. |
+| The reply arrived but the message still got `ERROR`. | The answer was not sent with `im +messages-reply --message-id <id>`, or it sits past the 50th message of a thread. | Reply to the message directly. See "Limits" in `architecture.md`. |
 | Group @mentions are ignored; DMs work. | `LARK_BOT_OPEN_ID` is empty or wrong in `relay.env`. | `python3 scripts/onboard.py relay --start` rewrites it from the app. |
 | The sender has no name (`name_unresolved`). | The contact scopes are missing. | `python3 scripts/onboard.py scopes`, give the operator `apply_url`. Names are retried after five minutes. |
 | A `lark-cli` call fails with `app_scope_not_applied`. | The app does not have that scope. | Give the operator the `console_url` from the error. |
