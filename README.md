@@ -71,8 +71,7 @@ standard library.
   in `~/.lark-relay/webhook.env`, both readable only by the bot's user. The relay runs between
   bot runs, so it needs them on disk.
 - **Limits.** A Grok Bot routine starts at most 200 runs an hour, so that is the ceiling on
-  answered messages. Replies posted inside a group thread are not recognised by the reaction
-  tracking. See [`references/architecture.md`](references/architecture.md).
+  answered messages. See [`references/architecture.md`](references/architecture.md) for the rest.
 
 ## Development
 
