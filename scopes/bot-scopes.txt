@@ -1,4 +1,6 @@
 # Default bot (tenant) scopes for grokbot-lark.
+# Lets the app read its own granted scope list (used by onboard.py scopes).
+application:application:self_manage
 # Contact scopes let the relay enrich the sender with email, en_name,
 # and employee_id. Enrichment is fail-soft if those scopes are missing.
 # After applying, publish a new app version or the scopes will not take effect.

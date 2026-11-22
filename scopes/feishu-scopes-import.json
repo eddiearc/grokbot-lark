@@ -6,6 +6,7 @@
       "contact:user.employee_id:readonly",
       "contact:user.email:readonly",
       "contact:department.base:readonly",
+      "application:application:self_manage",
       "base:app:copy",
       "base:app:create",
       "base:app:read",
