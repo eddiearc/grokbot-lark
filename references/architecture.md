@@ -70,6 +70,8 @@ If the webhook is not configured or the POST fails, the payload is appended to
   `name_unresolved: true` (on the payload and in `sender`) means no display name was found.
 - `text` is `lark-cli`'s plain-text rendering. For an interactive card it is the raw card JSON.
 - There is no owner flag. Every sender is an ordinary user.
+- Setup sends one body with `"type": "relay_test"` to check the webhook. It is not a message;
+  the handler ends that run without replying.
 
 ## Working reaction
 

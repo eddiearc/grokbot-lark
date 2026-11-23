@@ -99,6 +99,11 @@ routine's **Webhook** section on desktop. That makes this the one manual step:
 3. `python3 scripts/onboard.py webhook --url '<POST to URL>'` writes
    `<relay dir>/webhook.env` (mode `600`) from the URL and the `LARK_BOT_WEBHOOK_KEY` environment
    variable. It never prints either value.
+4. The same command then sends one test call, a body of `{"type": "relay_test", …}`, and prints
+   `test: accepted (HTTP 200)` when the webhook took it. That starts one run of the handler
+   routine, whose instruction says to end a `relay_test` run without doing anything. A wrong URL
+   or key shows up here (`status: rejected`) instead of at the first real message. `--no-test`
+   skips the call.
 
 A secret saved through the card is added to the computer's environment, which every bot on the
 machine shares. If the command reports `key: missing`, the secret did not reach your shell:

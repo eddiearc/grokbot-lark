@@ -31,7 +31,7 @@ Start with the health report. It ends with `status: healthy`, or with `status: u
 | The sender has no name (`name_unresolved`). | The contact scopes are missing. | `python3 scripts/onboard.py scopes`, give the operator `apply_url`. Names are retried after five minutes. |
 | A `lark-cli` call fails with `app_scope_not_applied`. | The app does not have that scope. | Give the operator the `console_url` from the error. |
 | Replies come from the wrong bot. | A `lark-cli` call ran without sourcing this bot's store env file. | Use the command in the payload's `instructions`. |
-| `webhook_post_failed` with `http_401` or `http_403`. | Wrong or outdated key. | `python3 scripts/onboard.py webhook --url '<URL>'` with the current key. |
+| `webhook_post_failed` with `http_401` or `http_403`, or `onboard.py webhook` says `status: rejected`. | The URL and key do not belong together, or the key is outdated. | The operator copies both again from the routine's Webhook section; then `python3 scripts/onboard.py webhook --url '<URL>'`. It tests the pair before you rely on it. |
 | `webhook_post_failed` during a burst of messages. | The handler routine reached its limit of 200 runs an hour. | Nothing to do: messages stay in the spool and are delivered later. |
 | `start.sh` says "already running" but `status.sh` says `listener_down`. | The supervisor died and left `relay.py` holding the lock, or a supervisor from the first release is still running without its pid file. | `~/.lark-relay/stop.sh`, then `~/.lark-relay/start.sh`. `stop.sh` finds and ends both. |
 | `consume.stderr.log` says another bus is already connected. | A second relay, or a manual `lark-cli event consume`, uses the same store. | Stop the other one. Each bot needs its own store and relay directory. |
@@ -64,8 +64,9 @@ from the app, stops the running relay, and starts the new one. It also works on 
 the first release, which had no `start.sh`, `stop.sh`, or `relay.env`, and whose supervisor did
 not exit on TERM: `stop.sh` ends it anyway.
 
-Afterwards replace the instructions of both routines with the current text in `templates/`.
-Edit the routines in place; a new handler routine would get a new webhook URL and key.
+Afterwards replace the instructions of both routines with the current text
+(`python3 scripts/onboard.py routine handler` and `… routine health-check`). Edit the routines
+in place; a new handler routine would get a new webhook URL and key.
 
 ## Starting over
 

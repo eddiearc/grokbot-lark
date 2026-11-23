@@ -5,7 +5,7 @@ The operator only has to scan one QR code. Every command prints short
 ``key: value`` lines and a final ``next:`` line that says what to do next, so an
 LLM agent can drive the whole setup by following those lines.
 
-Commands: app, wait, scopes, relay, webhook. Run ``--help`` on any of them.
+Commands: app, wait, scopes, relay, webhook, routine. Run ``--help`` on any of them.
 Target: Linux, python3 >= 3.9, standard library only.
 """
 
@@ -22,6 +22,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import quote
@@ -32,6 +34,12 @@ import scope_link  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SCOPES_FILE = ROOT / "scopes" / "bot-scopes.txt"
+TEMPLATES_DIR = ROOT / "templates"
+ROUTINE_TEMPLATES = {
+    "handler": "handler-routine-prompt.md",
+    "health-check": "health-check-routine-prompt.md",
+}
+DEFAULT_RELAY_REF = "~/.lark-relay"
 RELAY_SRC = ROOT / "relay"
 
 EVENT = "im.message.receive_v1"
@@ -46,6 +54,14 @@ MANAGED_KEYS = (
     "LARK_BOT_OPEN_ID",
     "LARK_BOT_NAME",
 )
+LOCAL_URL_RE = re.compile(r"^http://(127\.0\.0\.1|localhost)(:\d+)?(/\S*)?$")
+WEBHOOK_TEST_TIMEOUT = 20
+WEBHOOK_TEST_BODY = {
+    "type": "relay_test",
+    "summary": "grokbot-lark setup check",
+    "instructions": "This is a connectivity check from grokbot-lark setup, not a message. "
+    "Do nothing: send no reply and no chat message.",
+}
 BLOCKED_STATES = {"blocked", "failed", "fail", "missing", "error"}
 
 
@@ -111,7 +127,9 @@ def relay_dir_for(args: argparse.Namespace) -> Path:
 
 
 def next_cmd(name: str, bot: str, extra: str = "") -> str:
-    return f"python3 scripts/onboard.py {name} --bot {bot}" + (f" {extra}" if extra else "")
+    """A command line to print in next:. The default bot is left implicit, as in the docs."""
+    bot_part = "" if bot == DEFAULT_BOT else f" --bot {bot}"
+    return f"python3 scripts/onboard.py {name}{bot_part}" + (f" {extra}" if extra else "")
 
 
 def parse_json(text: str) -> Any:
@@ -396,8 +414,9 @@ def print_waiting(store: Store, state: dict) -> None:
         f"verification_url: {state['url']}",
         f"qr_png: {qr or 'unavailable (' + state.get('qr_reason', 'not generated') + ')'}",
         f"scopes_preset: {state.get('scopes_preset', 'none')}",
-        "next: Show verification_url and attach the QR image to the operator in ONE "
-        f"message now, then immediately run: {next_cmd('wait', store.bot)}",
+        "next: Send the operator ONE message now with verification_url exactly as printed "
+        "(never shorten, wrap or re-encode it) and the QR image attached, then immediately run: "
+        f"{next_cmd('wait', store.bot)}",
     )
 
 
@@ -985,10 +1004,15 @@ def cmd_relay(args: argparse.Namespace) -> int:
     if configured:
         nxt = f"{relay_dir / 'status.sh'}"
     else:
+        flags = ""
+        if args.bot != DEFAULT_BOT:
+            flags += f" --bot {args.bot}"
+        if args.relay_dir:
+            flags += f" --relay-dir {args.relay_dir}"
         nxt = (
-            "Create the handler routine with a webhook trigger, then save its URL and key: "
-            f"python3 scripts/onboard.py webhook --relay-dir {relay_dir} --url '<POST to URL>' "
-            "(key from the LARK_BOT_WEBHOOK_KEY secret)"
+            "Create the two routines, then save the handler routine's webhook: "
+            f"python3 scripts/onboard.py webhook{flags} --url '<POST to URL>'. "
+            "The key is read from the LARK_BOT_WEBHOOK_KEY secret; never put it on the command line."
         )
     out(f"next: {nxt}")
     return code
@@ -996,6 +1020,33 @@ def cmd_relay(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------
 # webhook
+
+
+def send_webhook_test(url: str, key: str) -> Tuple[str, str]:
+    """POST one relay_test request. Returns (verdict, text for the test: line).
+
+    verdict is "ok", "rejected" (wrong URL or key) or "failed". The text never
+    contains the URL or the key.
+    """
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(WEBHOOK_TEST_BODY).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=WEBHOOK_TEST_TIMEOUT) as response:
+            code = response.getcode()
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        exc.close()
+    except Exception as exc:  # noqa: BLE001 - the reason is the class name only
+        return "failed", f"unreachable ({type(exc).__name__})"
+    if 200 <= code < 300:
+        return "ok", f"accepted (HTTP {code})"
+    if code in (401, 403):
+        return "rejected", f"rejected (HTTP {code})"
+    return "failed", f"failed (HTTP {code})"
 
 
 def cmd_webhook(args: argparse.Namespace) -> int:
@@ -1012,7 +1063,7 @@ def cmd_webhook(args: argparse.Namespace) -> int:
         key = clean_key(sys.stdin.read())
     if not key:
         key = clean_key(os.environ.get(args.key_env) or current.get("LARK_BOT_WEBHOOK_KEY") or "")
-    if url and not url.startswith("https://"):
+    if url and not (url.startswith("https://") or LOCAL_URL_RE.match(url)):
         out("status: error", "error: the webhook URL must start with https://")
         return 2
 
@@ -1027,15 +1078,31 @@ def cmd_webhook(args: argparse.Namespace) -> int:
     )
     status_sh = relay_dir / "status.sh"
     if url and key:
-        out(
-            "status: saved",
-            "url: set",
-            "key: set",
-            f"file: {path}",
-            "next: The relay picks this up within a few seconds; no restart needed. "
-            f"Check: {status_sh}",
-        )
-        return 0
+        skip = args.no_test or os.environ.get("ONBOARD_SKIP_WEBHOOK_TEST") == "1"
+        verdict, detail = ("ok", "skipped") if skip else send_webhook_test(url, key)
+        lines = ["url: set", "key: set", f"test: {detail}", f"file: {path}"]
+        if verdict == "ok":
+            out(
+                "status: saved",
+                *lines,
+                "next: The relay picks this up within a few seconds; no restart needed. "
+                f"Check: {status_sh}",
+            )
+            return 0
+        if verdict == "rejected":
+            nxt = (
+                "The URL or key does not match. Ask the operator to copy both again from the "
+                "routine's Webhook section (clicking a field copies it), save the key in the "
+                "secret again, then run this command again."
+            )
+        else:
+            nxt = (
+                "The webhook did not accept the call. Check that the routine exists and is not "
+                "paused, and that the URL is the routine's \"POST to\" value; then run this "
+                "command again."
+            )
+        out("status: rejected", *lines, f"next: {nxt}")
+        return 4
     missing = []
     if not url:
         missing.append("url (pass --url 'https://...')")
@@ -1052,6 +1119,43 @@ def cmd_webhook(args: argparse.Namespace) -> int:
         "next: still missing " + "; ".join(missing),
     )
     return 3
+
+
+# --------------------------------------------------------------------------
+# routine
+
+
+def routine_text(raw: str) -> str:
+    """Everything after the first line that is exactly '---', trimmed; the whole text without one."""
+    lines = raw.splitlines()
+    if "---" in lines:
+        lines = lines[lines.index("---") + 1:]
+    return "\n".join(lines).strip("\n") + "\n"
+
+
+def relay_ref(relay_dir: Path) -> str:
+    """The directory as the routine text should name it: ~/... inside the home directory."""
+    home = Path.home().resolve()
+    try:
+        return "~/" + relay_dir.relative_to(home).as_posix()
+    except ValueError:
+        return str(relay_dir)
+
+
+def cmd_routine(args: argparse.Namespace) -> int:
+    path = TEMPLATES_DIR / ROUTINE_TEMPLATES[args.kind]
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise OnboardError(f"cannot read {path}: {exc.strerror or type(exc).__name__}")
+    text = routine_text(raw)
+    ref = relay_ref(relay_dir_for(args))
+    if ref != DEFAULT_RELAY_REF:
+        # Not inside a longer name such as ~/.lark-relay-other.
+        text = re.sub(re.escape(DEFAULT_RELAY_REF) + r"(?![A-Za-z0-9_-])", lambda _m: ref, text)
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -1128,7 +1232,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="save the handler routine's webhook URL and key",
         description="Write webhook.env (mode 600). The key is never taken from argv: it is read "
         "from the environment variable named by --key-env, or from stdin with --key-stdin. "
-        "Exit 0 saved, 3 incomplete.",
+        "After saving it sends one connectivity check (skip with --no-test). "
+        "Exit 0 saved, 3 incomplete, 4 the check failed.",
     )
     common(p)
     p.add_argument("--relay-dir", default=None,
@@ -1138,7 +1243,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--key-env", default="LARK_BOT_WEBHOOK_KEY", metavar="NAME", type=env_name_arg,
                    help="environment variable that holds the key (default: LARK_BOT_WEBHOOK_KEY); "
                    "give each bot on a shared machine its own name")
+    p.add_argument("--no-test", action="store_true", help="do not send the connectivity check")
     p.set_defaults(func=cmd_webhook)
+
+    p = sub.add_parser(
+        "routine",
+        help="print the instruction text of a routine",
+        description="Print only the instruction of the handler or health-check routine, ready to "
+        "redirect to a file or paste. Paths in it follow this bot's relay directory. Needs no "
+        "lark-cli and no app.",
+    )
+    common(p)
+    p.add_argument("kind", choices=sorted(ROUTINE_TEMPLATES), help="which routine")
+    p.add_argument("--relay-dir", default=None,
+                   help="relay directory (default: ~/.lark-relay; ~/.lark-relay-<bot> when --bot is given)")
+    p.set_defaults(func=cmd_routine)
     return parser
 
 

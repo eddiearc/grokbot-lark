@@ -6,7 +6,9 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -515,7 +517,7 @@ class RelayTests(OnboardCase):
         self.assertEqual(out["bot_env"], str(self.store("t1") / "env.sh"))
         self.assertEqual(out["bot_open_id"], "ou_fakebot")
         self.assertEqual(out["webhook"], "not configured")
-        self.assertIn("webhook --relay-dir", out["next"])
+        self.assertIn(f"webhook --bot t1 --relay-dir {self.relay_dir} --url", out["next"])
         self.assertIn("<POST to URL>", out["next"])
         self.assertEqual(self.mode(self.relay_dir), 0o700)
         for name, mode in [("relay.py", 0o600), ("helper.py", 0o600), ("start.sh", 0o700),
@@ -776,9 +778,255 @@ def support_values(path: Path):
     return values["LARK_BOT_WEBHOOK_URL"], values["LARK_BOT_WEBHOOK_KEY"]
 
 
+
+class RoutineTests(OnboardCase):
+    def routine(self, kind: str, *extra: str, script=None, env=None):
+        return self.run_onboard(["routine", kind] + list(extra), script=script, env=env)
+
+    @staticmethod
+    def template_parts(name: str):
+        lines = (support.REPO / "templates" / name).read_text().splitlines()
+        cut = lines.index("---")
+        return lines[:cut], [l for l in lines[cut + 1:]]
+
+    def test_handler_prints_only_the_instruction(self) -> None:
+        proc = self.routine("handler", env={"PATH": "/usr/bin:/bin"})  # no lark-cli needed
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        above, below = self.template_parts("handler-routine-prompt.md")
+        first = next(l for l in below if l.strip())
+        self.assertTrue(proc.stdout.startswith(first + "\n"), proc.stdout[:80])
+        for line in above:
+            if line.strip():
+                self.assertNotIn(line, proc.stdout.splitlines())
+        self.assertNotIn("\n---\n", proc.stdout)
+        self.assertIn("`relay_test`", proc.stdout)
+        self.assertTrue(proc.stdout.endswith("\n") and not proc.stdout.endswith("\n\n"))
+        self.assertNotIn("next: ", proc.stdout)
+        self.assertNotIn("status: ", proc.stdout)
+
+    def test_health_check_follows_the_relay_directory(self) -> None:
+        default = self.routine("health-check").stdout
+        self.assertIn("~/.lark-relay/status.sh", default)
+        sales = self.routine("health-check", "--bot", "sales").stdout
+        self.assertIn("~/.lark-relay-sales/status.sh", sales)
+        self.assertNotIn("~/.lark-relay/", sales)
+        self.assertNotIn("~/.lark-relay ", sales)
+        custom = self.routine("health-check", "--relay-dir", "/opt/relay").stdout
+        self.assertIn("/opt/relay/status.sh", custom)
+        self.assertNotIn(".lark-relay", custom)
+        inside = self.routine("health-check", "--relay-dir", str(self.home / "my relay")).stdout
+        self.assertIn("~/my relay/status.sh", inside)
+
+    def test_longer_names_are_not_replaced(self) -> None:
+        repo = self.tmp / "repo"
+        script = make_fake_repo(repo)
+        (repo / "templates").mkdir()
+        (repo / "templates" / "health-check-routine-prompt.md").write_text(
+            "head\n---\nrun ~/.lark-relay/a, ~/.lark-relay-other/b, ~/.lark-relay_x and ~/.lark-relay.\n"
+        )
+        text = self.routine("health-check", "--relay-dir", "/opt/relay", script=script).stdout
+        self.assertEqual(
+            text, "run /opt/relay/a, ~/.lark-relay-other/b, ~/.lark-relay_x and /opt/relay.\n"
+        )
+
+    def test_template_without_a_separator_prints_everything(self) -> None:
+        repo = self.tmp / "repo"
+        script = make_fake_repo(repo)
+        (repo / "templates").mkdir()
+        (repo / "templates" / "handler-routine-prompt.md").write_text("only text\n")
+        self.assertEqual(self.routine("handler", script=script).stdout, "only text\n")
+
+    def test_missing_template_is_an_error(self) -> None:
+        script = make_fake_repo(self.tmp / "repo")
+        proc = self.routine("handler", script=script)
+        self.assertEqual(proc.returncode, 1)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "error")
+        self.assertIn("error", out)
+
+    def test_unknown_kind_is_refused(self) -> None:
+        self.assertNotEqual(self.routine("other").returncode, 0)
+
+
+class WebhookServer:
+    """A loopback HTTP server that answers every POST with one status and records the requests."""
+
+    def __init__(self, status: int) -> None:
+        self.requests = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                outer.requests.append(
+                    {
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                        "content_type": self.headers.get("Content-Type"),
+                        "body": json.loads(self.rfile.read(length) or b"{}"),
+                    }
+                )
+                self.send_response(status)
+                self.end_headers()
+                self.wfile.write(b"x")
+
+            def log_message(self, *args) -> None:
+                pass
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+
+
+class WebhookCheckTests(OnboardCase):
+    SECRET_PATH = "/hook/s3cr3t-path-token"
+    KEY = "k-check-1a2b3c"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.relay_dir = self.tmp / "relay-home"
+        self.file = self.relay_dir / "webhook.env"
+
+    def serve(self, status: int) -> WebhookServer:
+        server = WebhookServer(status)
+        self.addCleanup(server.close)
+        return server
+
+    def run_check(self, port: int, *extra: str):
+        proc = self.run_onboard(
+            ["webhook", "--relay-dir", str(self.relay_dir), "--url", f"http://127.0.0.1:{port}{self.SECRET_PATH}"]
+            + list(extra),
+            env={"LARK_BOT_WEBHOOK_KEY": self.KEY, "ONBOARD_SKIP_WEBHOOK_TEST": "0"},
+        )
+        for value in (self.KEY, self.SECRET_PATH):
+            self.assertNotIn(value, proc.stdout)
+            self.assertNotIn(value, proc.stderr)
+        self.assertEqual(support_values(self.file)[1], self.KEY)  # written in every case
+        return proc
+
+    def test_accepted(self) -> None:
+        server = self.serve(200)
+        proc = self.run_check(server.port)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual((out["status"], out["test"]), ("saved", "accepted (HTTP 200)"))
+        self.assertIn("status.sh", out["next"])
+        self.assertEqual(len(server.requests), 1)
+        request = server.requests[0]
+        self.assertEqual(request["path"], self.SECRET_PATH)
+        self.assertEqual(request["authorization"], "Bearer " + self.KEY)
+        self.assertEqual(request["content_type"], "application/json")
+        self.assertEqual(request["body"]["type"], "relay_test")
+        self.assertIn("Do nothing", request["body"]["instructions"])
+
+    def test_unauthorized(self) -> None:
+        for status in (401, 403):
+            server = self.serve(status)
+            proc = self.run_check(server.port)
+            self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+            out = kv(proc.stdout)
+            self.assertEqual((out["status"], out["test"]), ("rejected", f"rejected (HTTP {status})"))
+            self.assertIn("does not match", out["next"])
+
+    def test_other_http_status(self) -> None:
+        server = self.serve(500)
+        proc = self.run_check(server.port)
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual((out["status"], out["test"]), ("rejected", "failed (HTTP 500)"))
+        self.assertIn("not paused", out["next"])
+
+    def test_unreachable(self) -> None:
+        server = WebhookServer(200)
+        port = server.port
+        server.close()  # nothing listens on this port any more
+        proc = self.run_check(port)
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "rejected")
+        self.assertRegex(out["test"], r"^unreachable \(\w+\)$")
+        self.assertIn("not paused", out["next"])
+
+    def test_no_test_flag(self) -> None:
+        server = self.serve(200)
+        proc = self.run_check(server.port, "--no-test")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual((out["status"], out["test"]), ("saved", "skipped"))
+        self.assertEqual(server.requests, [])
+
+    def test_loopback_urls_are_accepted_and_others_are_not(self) -> None:
+        env = {"LARK_BOT_WEBHOOK_KEY": self.KEY}
+        for url in ("http://127.0.0.1:8080/hook", "http://localhost:8080/hook", "http://localhost/x",
+                    "http://127.0.0.1"):
+            proc = self.run_onboard(["webhook", "--relay-dir", str(self.relay_dir), "--url", url], env=env)
+            self.assertEqual(proc.returncode, 0, url + proc.stdout)
+        for url in ("http://example.com/x", "http://127.0.0.1.example.com/x", "http://localhost@example.com/x"):
+            proc = self.run_onboard(["webhook", "--relay-dir", str(self.relay_dir), "--url", url], env=env)
+            self.assertEqual(proc.returncode, 2, url)
+
+
+class NextCommandTests(OnboardCase):
+    """next: lines leave out --bot for the default bot and keep it for any other."""
+
+    def next_lines(self, bot: str) -> dict:
+        flags = [] if bot == "lark-bot" else ["--bot", bot]
+        result = {}
+        proc = self.run_onboard(["app"] + flags)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result["app"] = kv(proc.stdout)["next"]
+        self.flag("scan-done")
+        proc = self.run_onboard(["wait", "--timeout", "20"] + flags)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result["wait"] = kv(proc.stdout)["next"]
+        result["scopes"] = kv(self.run_onboard(["scopes"] + flags).stdout)["next"]
+        result["relay"] = kv(self.run_onboard(["relay"] + flags).stdout)["next"]
+        return result
+
+    def test_default_bot_has_no_bot_flag(self) -> None:
+        for name, line in self.next_lines("lark-bot").items():
+            self.assertNotIn("--bot", line, name)
+            self.assertIn("python3 scripts/onboard.py", line, name)
+
+    def test_named_bot_keeps_the_bot_flag(self) -> None:
+        lines = self.next_lines("sales")
+        self.assertIn("python3 scripts/onboard.py wait --bot sales", lines["app"])
+        self.assertIn("python3 scripts/onboard.py scopes --bot sales", lines["wait"])
+        self.assertIn("python3 scripts/onboard.py relay --bot sales", lines["scopes"])
+        self.assertIn("python3 scripts/onboard.py webhook --bot sales --url '<POST to URL>'", lines["relay"])
+
+    def test_app_next_asks_for_one_exact_message(self) -> None:
+        nxt = kv(self.run_onboard(["app"]).stdout)["next"]
+        self.assertEqual(
+            nxt,
+            "Send the operator ONE message now with verification_url exactly as printed (never "
+            "shorten, wrap or re-encode it) and the QR image attached, then immediately run: "
+            "python3 scripts/onboard.py wait",
+        )
+
+    def test_relay_next_when_webhook_is_missing(self) -> None:
+        self.configure("lark-bot", "cli_imp")
+        nxt = kv(self.run_onboard(["relay"]).stdout)["next"]
+        self.assertEqual(
+            nxt,
+            "Create the two routines, then save the handler routine's webhook: "
+            "python3 scripts/onboard.py webhook --url '<POST to URL>'. The key is read from the "
+            "LARK_BOT_WEBHOOK_KEY secret; never put it on the command line.",
+        )
+        relay_dir = self.tmp / "elsewhere"
+        nxt = kv(self.run_onboard(["relay", "--relay-dir", str(relay_dir)]).stdout)["next"]
+        self.assertIn(f"webhook --relay-dir {relay_dir} --url '<POST to URL>'", nxt)
+        self.assertNotIn("--bot", nxt)
+
 class HelpTests(unittest.TestCase):
     def test_help_for_every_command(self) -> None:
-        for cmd in ([], ["app"], ["wait"], ["scopes"], ["relay"], ["webhook"]):
+        for cmd in ([], ["app"], ["wait"], ["scopes"], ["relay"], ["webhook"], ["routine"]):
             proc = subprocess.run(
                 [sys.executable, str(support.ONBOARD)] + cmd + ["--help"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
