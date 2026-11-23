@@ -132,6 +132,9 @@ A Grok Bot cannot read the URL or key of its own webhook routine; they are shown
 routine's **Webhook** section on desktop. That makes this the one manual step, and both values
 travel the same way:
 
+0. The bot's message links the two fields (the routine's Webhook URL and Webhook key), so the
+   operator opens each with one click and copies it there. Without the links they have to find
+   the routine first.
 1. The operator pastes **POST to** into a secure secret card named `LARK_BOT_WEBHOOK_URL`.
 2. The operator pastes **key** into a second card named `LARK_BOT_WEBHOOK_KEY`.
 3. `python3 scripts/onboard.py webhook` reads both from the environment and writes

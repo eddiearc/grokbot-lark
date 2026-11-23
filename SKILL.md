@@ -135,11 +135,17 @@ You cannot read your own webhook URL or key; only the operator can see them. Bot
 secure cards, so the operator never pastes anything into the chat. The order matters: a card
 that appears before the explanation leaves the operator guessing what to paste.
 
-1. **First, message the operator** where both values are:
+1. **First, message the operator, with links.** A description alone leaves them searching for
+   the routine. Put two links in the message: one that opens the handler routine's
+   **Webhook URL** and one that opens its **Webhook key**. Each opens the field, and one click
+   there copies the value. For example:
 
-   > Open the **Lark message handler** routine on desktop. Its **Webhook** section shows
-   > **POST to** and **key**; clicking a field copies it. I will show you two cards: paste
-   > **POST to** into the first and **key** into the second.
+   > Two values to copy from my **Lark message handler** routine: [Webhook URL] and
+   > [Webhook key]. Each link opens the field; click it to copy. I will show you two cards:
+   > paste the URL into the first and the key into the second.
+
+   If you cannot link a field, link the routine itself and add that its **Webhook** section
+   shows **POST to** and **key**. Never send this message without a link.
 
 2. **Then request two secure secrets**, in this order: `LARK_BOT_WEBHOOK_URL`, then
    `LARK_BOT_WEBHOOK_KEY`. Never ask for either value in chat.
@@ -202,7 +208,7 @@ exact reply command for this bot; use it as given.
 | Upgrade | `git pull`, then `python3 scripts/onboard.py relay --start`, then `python3 scripts/onboard.py scopes`, then replace both routine instructions with the current text (edit the routines; do not recreate them) |
 | Check and add permissions | `python3 scripts/onboard.py scopes` (adds what is missing; prints `grant_url` when it needs one confirmation from the operator) |
 | Test the webhook | `python3 scripts/onboard.py webhook --check` (changes nothing) |
-| Change the webhook | Ask for the two secure cards again, then `python3 scripts/onboard.py webhook` |
+| Change the webhook | Send the links to the routine's Webhook URL and Webhook key, ask for the two secure cards again, then `python3 scripts/onboard.py webhook` |
 | Routine instructions | `python3 scripts/onboard.py routine handler`, `… routine health-check` |
 | Logs | `~/.lark-relay/logs/relay.jsonl`, `consume.stderr.log`, `supervisor.log` |
 
