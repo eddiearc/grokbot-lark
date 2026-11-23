@@ -797,6 +797,47 @@ class RelayTests(OnboardCase):
         data = json.loads((self.store("t2") / "app.json").read_text())
         self.assertEqual(data["bot_open_id"], "ou_fakebot")
 
+    def test_open_id_is_recovered_from_the_installed_relay(self) -> None:
+        # An install made before relay.env existed logged the open_id at every start.
+        self.configure("t2", "cli_two")
+        (self.store("t2") / "app.json").unlink()
+        logs = self.relay_dir / "logs"
+        logs.mkdir(parents=True)
+        (logs / "relay.jsonl").write_text(
+            json.dumps({"msg": "relay_start", "bot_open_id": "ou_old_start"}) + "\n"
+            + json.dumps({"msg": "forwarded", "message_id": "om_1"}) + "\n"
+            + json.dumps({"msg": "relay_start", "bot_open_id": "ou_from_log"}) + "\n"
+            + json.dumps({"msg": "relay_start", "bot_open_id": ""}) + "\n"
+        )
+        self.flag("bot-info-fail")
+        proc = self.relay(bot="t2")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(kv(proc.stdout)["bot_open_id"], "ou_from_log")
+        self.assertNotIn("warning:", proc.stdout)
+        self.assertIn("LARK_BOT_OPEN_ID=ou_from_log", (self.relay_dir / "relay.env").read_text())
+        self.assertEqual(json.loads((self.store("t2") / "app.json").read_text())["bot_open_id"], "ou_from_log")
+
+    def test_existing_open_id_is_kept_when_the_api_does_not_answer(self) -> None:
+        self.configure("t2", "cli_two")
+        (self.store("t2") / "app.json").unlink()
+        self.relay_dir.mkdir(parents=True)
+        (self.relay_dir / "relay.env").write_text("LARK_BOT_OPEN_ID=ou_set_by_hand\nEXTRA=1\n")
+        self.flag("bot-info-fail")
+        proc = self.relay(bot="t2")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(kv(proc.stdout)["bot_open_id"], "ou_set_by_hand")
+        text = (self.relay_dir / "relay.env").read_text()
+        self.assertEqual(text.count("LARK_BOT_OPEN_ID="), 1)
+        self.assertIn("LARK_BOT_OPEN_ID=ou_set_by_hand", text)
+
+    def test_unknown_open_id_is_a_warning(self) -> None:
+        self.configure("t2", "cli_two")
+        (self.store("t2") / "app.json").unlink()
+        self.flag("bot-info-fail")
+        proc = self.relay(bot="t2")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("warning: the bot open_id is unknown", proc.stdout)
+
     def test_lazy_app_json(self) -> None:
         (self.store("t1") / "app.json").unlink()
         proc = self.relay()

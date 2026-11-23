@@ -17,6 +17,7 @@ Check the Feishu/Lark relay and repair it if needed. Stay silent when it is heal
    | `lark_cli_missing` | Run `npm install -g @larksuite/cli`, then `~/.lark-relay/start.sh`. |
    | `listener_down` | Run `~/.lark-relay/start.sh`. |
    | `duplicate_consumer` | Run `~/.lark-relay/stop.sh`, then `~/.lark-relay/start.sh`. |
+   | `bot_open_id_missing` | In the skill's repository run `python3 scripts/onboard.py relay --start`. |
    | `relay_crashing`, `never_ready` | Read the log files named on that line and find the cause. Do not restart in a loop. |
    | `webhook_unconfigured`, `forwarding_stalled` | Nothing to repair yourself: the operator must provide or fix the webhook URL and key. |
 

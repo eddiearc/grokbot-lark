@@ -277,6 +277,20 @@ class StatusTests(ShellCase):
         self.assertIn("problem: lark_cli_missing - reinstall it: npm install -g @larksuite/cli", out.stdout)
 
 
+class BotOpenIdStatusTests(ShellCase):
+    def test_missing_open_id_is_a_problem(self):
+        proc = self.run_script("status.sh")
+        self.assertIn("bot open_id: not set", proc.stdout)
+        self.assertIn("problem: bot_open_id_missing - ", proc.stdout)
+
+    def test_open_id_from_relay_env_is_enough(self):
+        (self.relay / "relay.env").write_text("LARK_BOT_OPEN_ID=ou_test\n")
+        proc = self.run_script("status.sh")
+        self.assertIn("bot open_id: set", proc.stdout)
+        self.assertNotIn("bot_open_id_missing", proc.stdout)
+        self.assertNotIn("ou_test", proc.stdout)
+
+
 @unittest.skipUnless(HAS_FLOCK, "start.sh and stop.sh need flock")
 class StartStopTests(ShellCase):
     def test_start_twice_then_stop_twice(self):
