@@ -528,12 +528,7 @@ def decorate_url(
     for avatar in avatars:
         out_url += "&avatar=" + quote(avatar, safe="")
     if with_config_scope:
-        # Lark (international) has neither APP_CONFIG_SCOPE nor the API that adds scopes, so
-        # there the link has to carry the whole list, long as that makes it.
-        addons = scope_link.encode_addons(
-            scope_link.build_addons(all_scopes, (EVENT,)) if all_scopes
-            else scope_link.build_addons((scope_link.APP_CONFIG_SCOPE,), ())
-        )
+        addons = scope_link.encode_addons(scope_link.build_addons(all_scopes, (EVENT,)))
         out_url += "&addons=" + quote(addons, safe="")
     return out_url + "&createOnly=true"
 
@@ -616,7 +611,12 @@ def cmd_app(args: argparse.Namespace) -> int:
     # whichever they use.
     url = decorate_url(
         landing_url(base_url, args.page), name, args.desc, args.avatar, not args.no_scopes,
-        scope_link.load_scopes(SCOPES_FILE) if args.brand == "lark" else (),
+        # The whole list, so the app is complete the moment it is created. Feishu also gets
+        # APP_CONFIG_SCOPE: if the long link arrives damaged the page drops the list, and
+        # `scopes` then adds it through the API. Lark (international) has neither that scope
+        # nor that API.
+        scope_link.load_scopes(SCOPES_FILE)
+        + ([] if args.brand == "lark" else [scope_link.APP_CONFIG_SCOPE]),
     )
     qr, reason = store.make_qr(url, "app-qr.png")
     state = {

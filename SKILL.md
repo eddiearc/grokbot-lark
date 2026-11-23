@@ -57,15 +57,17 @@ python3 scripts/onboard.py app --name "<your own display name>"
 - Do not ask the operator anything first. The name is already filled in on the page.
 
 The output has `verification_url` and `qr_png`. **Send one message now** with both, for example:
-"Open this link, or scan the code with Feishu, and confirm. The page asks for one permission,
-Modify app info: with it I add the permissions I need myself."
+"Open this link, or scan the code with Feishu, and confirm. The page lists the permissions I
+need."
 
-- **Paste `verification_url` exactly as printed.** Never shorten or re-encode it.
+- **Send `verification_url` as a link, exactly as printed.** It is long because it carries the
+  permission list; one changed character and the page drops the list. Never shorten or
+  re-encode it.
 - **Attach the file at `qr_png`.** It is the same link as an image, for a phone.
 
-The page shows your name and one extra permission, "Modify app info" (修改应用信息, marked
-sensitive). It is the permission that lets you add all the others yourself in step 2, so the
-operator confirms once and never opens the developer console.
+The page shows your name and the permissions from `scopes/bot-scopes.txt`, so the app is
+complete the moment the operator confirms. On Feishu the list includes "Modify app info"
+(修改应用信息, marked sensitive): with it you can add whatever is still missing in step 2.
 
 Then, in the same turn, wait:
 

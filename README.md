@@ -16,9 +16,9 @@ Tell your Grok Bot:
 What happens next:
 
 1. The bot sends you a link and a QR code of the same link. Open either one and confirm. That
-   creates the bot's app under the bot's own name and publishes it. The page asks for one
-   permission, "Modify app info" (修改应用信息): the bot uses it to add the rest of its
-   permissions itself, so this one confirmation is all it needs from you.
+   creates the bot's app under the bot's own name, with its permissions, and publishes it.
+   If a permission is still missing afterwards, the bot adds it itself on Feishu; on Lark
+   (international) it sends you a page to confirm.
 2. The bot installs a small relay on its computer and creates two routines for itself.
 3. The bot asks for the webhook URL and key of one of those routines. A Grok Bot cannot read
    them itself, so you copy them from the routine's **Webhook** section into the two secure
