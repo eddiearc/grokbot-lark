@@ -3,7 +3,7 @@
 `SKILL.md` gives the six setup steps. This page explains what happens behind them, and what to do
 when a step does not go the usual way.
 
-## What the scan link carries
+## What the operator gets
 
 `scripts/onboard.py app` starts `lark-cli config init --new` in this bot's isolated store, takes
 the verification link it prints, and appends parameters that the Feishu/Lark app-creation page
@@ -25,6 +25,15 @@ understands. These are the parameters of the official SDK's `registerApp` flow
  "events": {"items": {"tenant": ["im.message.receive_v1"], "user": []}}}
 ```
 
+With `addons` the link is more than a kilobyte of base64. An agent that writes such a link into
+a chat message corrupts it often enough to matter, and a corrupted `addons` is ignored by the
+page without any error. So the full link exists in one place only:
+
+| Output | Carries | Sent how |
+| --- | --- | --- |
+| `qr_png` | The full link: name, description, avatar, scopes, event | Attached as an image. A tool generates it from the exact link. |
+| `verification_url` | The same link without `addons` | Pasted as text. It is short. |
+
 After the operator confirms, the page creates the app, adds the bot capability, the scopes and
 the event, creates a version, and publishes it. `lark-cli` receives the app ID and secret and
 stores them in the bot's store. `onboard.py wait` then locks the store to the bot identity
@@ -34,27 +43,31 @@ stores them in the bot's store. `onboard.py wait` then locks the store to the bo
 
 | What you see | Why | What to do |
 | --- | --- | --- |
-| `scopes` says `partial` | The tenant does not have the "extra config" feature, so the page ignored `addons` and applied only its default template. Scope names the tenant cannot grant are also dropped silently. | The bridge works with the default template. Give the operator `apply_url` once. |
-| `scopes` says `blocked` | The published version lacks the scope or event that `lark-cli event consume` needs, or a tenant admin has not approved the app yet. | Send `apply_url` with its QR image, then run `scopes --wait 600`. Repeat the wait until it clears. |
-| `scopes` says `unknown` | The app could not read its own scope list, usually because `application:application:self_manage` is missing. | Continue. Mention `apply_url` once. |
-| `wait` says `failed`, reason `expired` | The link was not used in time (about an hour at the time of writing). | Run the command on the `next:` line and send the new link. |
-| `wait` says `failed`, reason `denied` | The operator declined on the page. | Ask whether they want to try again before sending a new link. |
-| `qr_png: unavailable (…)` | `lark-cli auth qrcode` failed. | Send the link alone. It works without the image. |
+| `scopes` says `partial` | The operator opened the link instead of scanning, so only the page's default template was applied. Or the tenant does not have the "extra config" feature and the page ignored `addons`. Scope names the tenant cannot grant are also dropped silently. | The bridge works with the default template. Attach `apply_qr_png` once, in the final setup message. |
+| `scopes` says `blocked` | The published version lacks the scope or event that `lark-cli event consume` needs, or a tenant admin has not approved the app yet. | Send `apply_qr_png`, then run `scopes --wait 600`. Repeat the wait until it clears. |
+| `scopes` says `unknown` | The app could not read its own scope list, usually because `application:application:self_manage` is missing. | Continue. Attach `apply_qr_png` once at the end. |
+| `wait` says `failed`, reason `expired` | The link was not used in time (about an hour at the time of writing). | Run the command on the `next:` line and send the new code and link. |
+| `wait` says `failed`, reason `denied` | The operator declined on the page. | Ask whether they want to try again before sending a new code. |
+| `qr_png: unavailable (…)` | `lark-cli auth qrcode` failed. | Send `verification_url` alone. The app is created with the default permissions and `scopes` reports what is missing. |
 
-The link is long because it carries every scope, so its QR code is dense. `onboard.py` renders
-it at 1024 px. It still decodes when shrunk to a quarter of that, but a phone camera needs it
-shown large: if a thumbnail does not scan, the operator opens the image at full size, or opens
-the link, which works the same.
+The QR code is dense because it carries every scope. `onboard.py` renders it at 1024 px. It
+still decodes when shrunk to a quarter of that, but a phone camera needs it shown large: if a
+thumbnail does not scan, the operator opens the image at full size.
 
 ## Adding permissions later
 
 `python3 scripts/onboard.py scopes` compares the app's granted bot scopes with
-`scopes/bot-scopes.txt` and prints two links for whatever is missing:
+`scopes/bot-scopes.txt`. For whatever is missing it prints:
 
-- `apply_url` is the launcher link (`/page/launcher?clientID=…&addons=…`). One scan; Feishu shows
-  the difference, the operator confirms, and Feishu publishes the new version itself.
-- `fallback_url` is the classic link (`/page/scope-apply?clientID=…&scopes=…`). After confirming
-  there, the operator must create and publish a new app version in the developer console.
+- `apply_qr_png`: a QR code of the launcher link (`/page/launcher?clientID=…&addons=…`). One
+  scan; Feishu shows the difference, the operator confirms, and Feishu publishes the new version
+  itself.
+- `permissions_page`: the app's permission page in the developer console
+  (`/app/<app id>/auth`), short enough to paste, for adding scopes by hand. After that the
+  operator must create and publish a new app version.
+
+The launcher link itself is printed (`apply_url`, with the classic `fallback_url`) only when the
+QR image could not be generated. Copy it exactly in that case.
 
 To change what the bot asks for, edit `scopes/bot-scopes.txt` (one scope per line) and keep
 `scopes/feishu-scopes-import.json` identical; a test compares the two.
@@ -71,7 +84,7 @@ python3 scripts/onboard.py scopes
 
 Add `--brand lark` for an international app. An imported app usually needs the bot capability,
 the `im.message.receive_v1` event over a long connection, and most scopes: `scopes` reports
-`blocked`, and its `apply_url` adds the scopes and the event in one scan.
+`blocked`, and its `apply_qr_png` adds the scopes and the event in one scan.
 
 ## Feishu or Lark
 

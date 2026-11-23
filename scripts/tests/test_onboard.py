@@ -29,7 +29,7 @@ class AppTests(OnboardCase):
         self.assertEqual(out["status"], "waiting_for_scan")
         self.assertEqual(out["bot"], "t1")
         self.assertEqual(out["app_name"], "t1")
-        self.assertEqual(out["scopes_preset"], f"{len(REQUIRED)} bot scopes + {EVENT}")
+        self.assertEqual(out["qr_carries"], f"app name, {len(REQUIRED)} bot scopes, {EVENT}")
         self.assertIn("python3 scripts/onboard.py wait --bot t1", out["next"])
         self.assertTrue(Path(out["qr_png"]).is_file())
 
@@ -45,15 +45,46 @@ class AppTests(OnboardCase):
         self.assertIn(f'export LARKSUITE_CLI_DATA_DIR="{store / "data"}"', text)
         self.assertIn(f'export LARKSUITE_CLI_LOG_DIR="{store / "logs"}"', text)
         state = json.loads((store / "app-init.json").read_text())
-        for key in ("pid", "url", "qr_png", "out_log", "err_log", "started_at", "name"):
+        for key in ("pid", "url", "full_url", "qr_png", "out_log", "err_log", "started_at", "name"):
             self.assertIn(key, state)
+        self.assertEqual(state["url"], out["verification_url"])
+        self.assertNotEqual(state["full_url"], state["url"])
 
-    def test_url_is_decorated_not_rewritten(self) -> None:
+    def test_output_lines_and_order(self) -> None:
+        proc = self.run_onboard(["app", "--bot", "t1"])
+        keys = [line.split(": ", 1)[0] for line in proc.stdout.splitlines()]
+        self.assertEqual(
+            keys,
+            ["status", "bot", "app_name", "qr_png", "qr_carries", "verification_url", "next"],
+        )
+        self.assertNotIn("scopes_preset", proc.stdout)
+        nxt = kv(proc.stdout)["next"]
+        self.assertTrue(nxt.startswith("Send the operator ONE message now: attach the QR image"), nxt)
+        self.assertIn("paste verification_url exactly as printed", nxt)
+
+    def test_printed_url_is_short_and_has_no_scopes(self) -> None:
         out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
         url = out["verification_url"]
         self.assertTrue(url.startswith(FAKE_BASE + "&"), url)
+        self.assertLess(len(url), 400)
+        self.assertNotIn("addons=", url)
         query = parse_qs(urlparse(url).query)
         self.assertEqual(query["user_code"], ["ABCD-EFGH"])
+        self.assertEqual(query["name"], ["t1"])
+        self.assertEqual(query["desc"], ["Grok Bot"])
+        self.assertEqual(query["createOnly"], ["true"])
+        self.assertTrue(url.endswith("createOnly=true"))
+
+    def test_qr_carries_the_full_url(self) -> None:
+        out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
+        short = out["verification_url"]
+        qr_calls = self.calls_matching("auth", "qrcode")
+        self.assertEqual(len(qr_calls), 1)
+        full = qr_calls[0]["argv"][2]
+        self.assertTrue(full.startswith(FAKE_BASE + "&"), full)
+        self.assertTrue(full.endswith("&createOnly=true"), full)
+        self.assertNotEqual(full, short)
+        query = parse_qs(urlparse(full).query)
         self.assertEqual(query["name"], ["t1"])
         self.assertEqual(query["desc"], ["Grok Bot"])
         self.assertEqual(query["createOnly"], ["true"])
@@ -61,6 +92,9 @@ class AppTests(OnboardCase):
         self.assertEqual(addons["scopes"]["tenant"], REQUIRED)
         self.assertEqual(addons["scopes"]["user"], [])
         self.assertEqual(addons["events"]["items"]["tenant"], [EVENT])
+        # the short link is the full one minus addons
+        raw_addons = full.split("&addons=")[1].split("&")[0]
+        self.assertEqual(full.replace("&addons=" + raw_addons, ""), short)
 
     def test_every_cli_call_uses_the_bot_store(self) -> None:
         self.run_onboard(["app", "--bot", "t1"])
@@ -78,7 +112,7 @@ class AppTests(OnboardCase):
     def test_qr_uses_relative_output_in_tmp(self) -> None:
         self.run_onboard(["app", "--bot", "t1"])
         qr = self.calls_matching("auth", "qrcode")[0]
-        self.assertEqual(qr["argv"][2], kv(self.run_onboard(["app", "--bot", "t1"]).stdout)["verification_url"])
+        self.assertIn("&addons=", qr["argv"][2])
         self.assertEqual(qr["argv"][3:5], ["--output", "app-qr.png"])
         self.assertIn("grokbot-lark-", qr["cwd"])
         self.assertEqual(qr["argv"][5:], ["--size", "1024"])  # long URL
@@ -101,9 +135,12 @@ class AppTests(OnboardCase):
         proc = self.run_onboard(["app", "--bot", "t1", "--no-scopes"])
         out = kv(proc.stdout)
         self.assertNotIn("addons=", out["verification_url"])
-        self.assertEqual(out["scopes_preset"], "none")
+        self.assertEqual(out["qr_carries"], "app name")
         self.assertIn("createOnly=true", out["verification_url"])
         qr = self.calls_matching("auth", "qrcode")[0]
+        self.assertEqual(qr["argv"][2], out["verification_url"])
+        state = json.loads((self.store("t1") / "app-init.json").read_text())
+        self.assertEqual(state["url"], state["full_url"])
         self.assertEqual(qr["argv"][-2:], ["--size", "512"])  # short URL
 
     def test_qr_failure_is_not_fatal(self) -> None:
@@ -124,6 +161,31 @@ class AppTests(OnboardCase):
         self.assertEqual(a["verification_url"], b["verification_url"])
         self.assertEqual(len(self.calls_matching("config", "init", "--new")), 1)
         self.assertEqual(pid1, json.loads((self.store("t1") / "app-init.json").read_text())["pid"])
+        self.assertEqual(a["qr_carries"], b["qr_carries"])
+
+    def test_qr_is_regenerated_from_the_full_url(self) -> None:
+        first = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
+        full = self.calls_matching("auth", "qrcode")[0]["argv"][2]
+        Path(first["qr_png"]).unlink()
+        second = self.run_onboard(["app", "--bot", "t1"])
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        out = kv(second.stdout)
+        self.assertEqual(out["verification_url"], first["verification_url"])
+        self.assertTrue(Path(out["qr_png"]).is_file())
+        qr_calls = self.calls_matching("auth", "qrcode")
+        self.assertEqual(len(qr_calls), 2)
+        self.assertEqual(qr_calls[1]["argv"][2], full)
+
+    def test_regeneration_falls_back_to_url_for_an_old_state_file(self) -> None:
+        first = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
+        path = self.store("t1") / "app-init.json"
+        state = json.loads(path.read_text())
+        del state["full_url"]
+        path.write_text(json.dumps(state))
+        Path(first["qr_png"]).unlink()
+        out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
+        self.assertTrue(Path(out["qr_png"]).is_file())
+        self.assertEqual(self.calls_matching("auth", "qrcode")[1]["argv"][2], first["verification_url"])
 
     def test_registration_is_detached_and_logged(self) -> None:
         self.run_onboard(["app", "--bot", "t1"])
@@ -373,9 +435,9 @@ class ScopesTests(OnboardCase):
         self.assertEqual(out["status"], "complete")
         self.assertEqual(out["bridge_ready"], "yes")
         self.assertEqual(out["granted"], f"{len(REQUIRED)}/{len(REQUIRED)}")
-        self.assertNotIn("apply_url", out)
-        self.assertNotIn("missing", out)
-        self.assertEqual(out["next"], "python3 scripts/onboard.py relay --bot t1")
+        for key in ("apply_url", "apply_qr_png", "permissions_page", "fallback_url", "missing"):
+            self.assertNotIn(key, out)
+        self.assertEqual(out["next"], "python3 scripts/onboard.py relay --bot t1 --start")
         call = self.calls_matching("api", "GET", "/open-apis/application/v6/applications/cli_imp")[0]
         self.assertIn('{"lang":"zh_cn"}', call["argv"])
         self.assertIn("--as", call["argv"])
@@ -395,23 +457,60 @@ class ScopesTests(OnboardCase):
         self.assertEqual(out["bridge_ready"], "yes")
         self.assertEqual(out["granted"], f"{len(REQUIRED) - len(expected)}/{len(REQUIRED)}")
         self.assertEqual(out["missing"].split(","), expected)
-        url = urlparse(out["apply_url"])
+        self.assert_qr_only(proc.stdout, expected)
+        self.assertTrue(Path(out["apply_qr_png"]).is_file())
+        self.assertEqual(Path(out["apply_qr_png"]).name, "scopes-qr.png")
+        self.assertEqual(
+            out["next"],
+            "Continue with: python3 scripts/onboard.py relay --bot t1 --start. In your final setup "
+            "message, attach apply_qr_png once and say that scanning it adds the remaining "
+            "permissions; do not wait for it.",
+        )
+
+    def assert_qr_only(self, stdout: str, expected: list) -> None:
+        """With a working QR the output has no long link, and the QR carries the launcher link."""
+        out = kv(stdout)
+        self.assertEqual(out["permissions_page"], "https://open.feishu.cn/app/cli_imp/auth")
+        for key in ("apply_url", "fallback_url", "fallback_note"):
+            self.assertNotIn(key, out)
+        qr_calls = self.calls_matching("auth", "qrcode")
+        self.assertEqual(len(qr_calls), 1)
+        url = urlparse(qr_calls[0]["argv"][2])
         self.assertEqual(url.path, "/page/launcher")
         query = parse_qs(url.query)
         self.assertEqual(query["clientID"], ["cli_imp"])
         addons = scope_link.decode_addons(query["addons"][0])
         self.assertEqual(addons["scopes"]["tenant"], expected)
-        self.assertTrue(Path(out["apply_qr_png"]).is_file())
-        self.assertEqual(Path(out["apply_qr_png"]).name, "scopes-qr.png")
+        self.assertEqual(qr_calls[0]["argv"][3:5], ["--output", "scopes-qr.png"])
+
+    def test_partial_with_a_failing_qr_prints_the_links(self) -> None:
+        missing = [REQUIRED[0], REQUIRED[5]]
+        self.set_granted([self.entry(s) for s in REQUIRED if s not in missing])
+        self.flag("qr-fail")
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertTrue(out["apply_qr_png"].startswith("unavailable ("), out["apply_qr_png"])
+        self.assertNotIn("permissions_page", out)
+        url = urlparse(out["apply_url"])
+        self.assertEqual(url.path, "/page/launcher")
+        query = parse_qs(url.query)
+        self.assertEqual(query["clientID"], ["cli_imp"])
+        addons = scope_link.decode_addons(query["addons"][0])
+        self.assertEqual(addons["scopes"]["tenant"], missing)
         fb = urlparse(out["fallback_url"])
         self.assertEqual(fb.path, "/page/scope-apply")
-        self.assertEqual(parse_qs(fb.query)["scopes"][0].split(","), expected)
+        self.assertEqual(parse_qs(fb.query)["scopes"][0].split(","), missing)
         self.assertIn("publish a new app version", out["fallback_note"])
-        self.assertIn("Continue with: python3 scripts/onboard.py relay --bot t1", out["next"])
-        self.assertIn("do not wait for it", out["next"])
+        self.assertEqual(
+            out["next"],
+            "Continue with: python3 scripts/onboard.py relay --bot t1 --start. In your final setup "
+            "message, send apply_url exactly as printed; do not wait for it.",
+        )
 
     def test_blocked(self) -> None:
-        self.set_granted([self.entry(s) for s in REQUIRED])
+        missing = [REQUIRED[2], REQUIRED[9]]
+        self.set_granted([self.entry(s) for s in REQUIRED if s not in missing])
         self.set_bridge(
             {
                 "status": "blocked",
@@ -428,8 +527,30 @@ class ScopesTests(OnboardCase):
         self.assertEqual(out["status"], "blocked")
         self.assertEqual(out["bridge_ready"], "no")
         self.assertEqual(lines_for(proc.stdout, "blocker"), ["scopes: missing im:message | grant it"])
-        self.assertIn("scopes --bot t1 --wait 600", out["next"])
-        self.assertIn("apply_url", out)  # blocked always shows a link
+        self.assertEqual(
+            out["next"],
+            "The relay cannot receive messages yet. Send the operator apply_qr_png to scan "
+            "(permissions_page is the manual alternative), then run: "
+            "python3 scripts/onboard.py scopes --bot t1 --wait 600",
+        )
+        self.assertTrue(Path(out["apply_qr_png"]).is_file())
+        self.assert_qr_only(proc.stdout, missing)
+
+    def test_blocked_with_a_failing_qr_prints_the_link(self) -> None:
+        self.set_granted([self.entry(s) for s in REQUIRED])
+        self.set_bridge({"status": "blocked", "preconditions": []})
+        self.flag("qr-fail")
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertIn("apply_url", out)
+        self.assertIn("fallback_url", out)
+        self.assertTrue(out["apply_qr_png"].startswith("unavailable ("))
+        self.assertEqual(
+            out["next"],
+            "The relay cannot receive messages yet. Send the operator apply_url exactly as "
+            "printed, then run: python3 scripts/onboard.py scopes --bot t1 --wait 600",
+        )
 
     def test_unknown(self) -> None:
         (self.ctl / "bridge.json").unlink()
@@ -440,8 +561,7 @@ class ScopesTests(OnboardCase):
         self.assertEqual(out["bridge_ready"], "unknown")
         self.assertEqual(out["granted"], "unknown")
         self.assertNotIn("missing", out)
-        addons = scope_link.decode_addons(parse_qs(urlparse(out["apply_url"]).query)["addons"][0])
-        self.assertEqual(addons["scopes"]["tenant"], REQUIRED)
+        self.assert_qr_only(proc.stdout, REQUIRED)
         self.assertIn("Continue with", out["next"])
 
     def test_wait_rechecks_until_deadline(self) -> None:
@@ -998,31 +1118,48 @@ class NextCommandTests(OnboardCase):
         lines = self.next_lines("sales")
         self.assertIn("python3 scripts/onboard.py wait --bot sales", lines["app"])
         self.assertIn("python3 scripts/onboard.py scopes --bot sales", lines["wait"])
-        self.assertIn("python3 scripts/onboard.py relay --bot sales", lines["scopes"])
+        self.assertIn("python3 scripts/onboard.py relay --bot sales --start", lines["scopes"])
         self.assertIn("python3 scripts/onboard.py webhook --bot sales --url '<POST to URL>'", lines["relay"])
 
-    def test_app_next_asks_for_one_exact_message(self) -> None:
+    def test_app_next_asks_for_one_message_with_the_qr(self) -> None:
         nxt = kv(self.run_onboard(["app"]).stdout)["next"]
         self.assertEqual(
             nxt,
-            "Send the operator ONE message now with verification_url exactly as printed (never "
-            "shorten, wrap or re-encode it) and the QR image attached, then immediately run: "
+            "Send the operator ONE message now: attach the QR image (scanning it with Feishu or "
+            "Lark creates the app with every permission in one go) and paste verification_url "
+            "exactly as printed for anyone who cannot scan. Then immediately run: "
             "python3 scripts/onboard.py wait",
+        )
+
+    @staticmethod
+    def relay_next(bot_flag: str, flags: str) -> str:
+        return (
+            "Create the two routines; their instructions are printed by: "
+            f"python3 scripts/onboard.py routine handler{bot_flag} and "
+            f"python3 scripts/onboard.py routine health-check{bot_flag}. "
+            "Then, in this order: 1) tell the operator where the webhook URL and key are "
+            "(the handler routine's Webhook section), 2) request a secure secret named "
+            f"LARK_BOT_WEBHOOK_KEY, 3) run: python3 scripts/onboard.py webhook{flags} "
+            "--url '<POST to URL>'. Never put the key on the command line."
         )
 
     def test_relay_next_when_webhook_is_missing(self) -> None:
         self.configure("lark-bot", "cli_imp")
         nxt = kv(self.run_onboard(["relay"]).stdout)["next"]
-        self.assertEqual(
-            nxt,
-            "Create the two routines, then save the handler routine's webhook: "
-            "python3 scripts/onboard.py webhook --url '<POST to URL>'. The key is read from the "
-            "LARK_BOT_WEBHOOK_KEY secret; never put it on the command line.",
-        )
+        self.assertEqual(nxt, self.relay_next("", ""))
+
+    def test_relay_next_for_a_named_bot_with_a_relay_dir(self) -> None:
+        self.configure("sales", "cli_imp")
+        relay_dir = self.tmp / "elsewhere"
+        nxt = kv(self.run_onboard(["relay", "--bot", "sales", "--relay-dir", str(relay_dir)]).stdout)["next"]
+        self.assertEqual(nxt, self.relay_next(" --bot sales", f" --bot sales --relay-dir {relay_dir}"))
+
+    def test_relay_next_with_only_a_relay_dir(self) -> None:
+        self.configure("lark-bot", "cli_imp")
         relay_dir = self.tmp / "elsewhere"
         nxt = kv(self.run_onboard(["relay", "--relay-dir", str(relay_dir)]).stdout)["next"]
-        self.assertIn(f"webhook --relay-dir {relay_dir} --url '<POST to URL>'", nxt)
-        self.assertNotIn("--bot", nxt)
+        self.assertEqual(nxt, self.relay_next("", f" --relay-dir {relay_dir}"))
+
 
 class HelpTests(unittest.TestCase):
     def test_help_for_every_command(self) -> None:

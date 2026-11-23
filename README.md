@@ -15,8 +15,10 @@ Tell your Grok Bot:
 
 What happens next:
 
-1. The bot sends you a link and a QR code. Open or scan it in Feishu/Lark and confirm. That
-   creates the bot's app under the bot's own name, with its permissions, and publishes it.
+1. The bot sends you a QR code and a link. Scan the code with Feishu/Lark and confirm. That
+   creates the bot's app under the bot's own name, with its permissions, and publishes it. The
+   link is for when you cannot scan; it creates the app with default permissions, and the bot
+   sends one more code for the rest.
 2. The bot installs a small relay on its computer and creates two routines for itself.
 3. The bot asks for the webhook URL and key of one of those routines. A Grok Bot cannot read
    them itself, so you copy them from the routine's **Webhook** section: the URL into chat, the

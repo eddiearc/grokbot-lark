@@ -49,15 +49,16 @@ python3 scripts/onboard.py app --name "<your own display name>"
 
 - Add `--brand lark` only if the operator said Lark or "international". Feishu is the default.
 - Add `--avatar <https URL>` if you have a public URL of your own avatar. Skip it otherwise.
-- Do not ask the operator anything first. A name, scopes, and events are already in the link.
+- Do not ask the operator anything first. The name, the permissions, and the message event are
+  already prepared.
 
-The output has `verification_url` and `qr_png`. **Send one message now** with the link and the
-QR image, for example: "Open this link, or scan it with Feishu, and confirm."
+The output has `qr_png` and `verification_url`. **Send one message now** with both, for example:
+"Scan this code with Feishu and confirm. If you cannot scan, open the link instead."
 
-- The link is long because it carries the app's name and permissions. Send it **exactly as
-  printed**: never shorten it, drop parameters, wrap it, or re-encode it. To keep the chat
-  readable you may make it a Markdown link, with the full URL as its target.
-- Attach the file at `qr_png`. It is the same link as a QR code.
+- **Attach the file at `qr_png`.** The code carries the app name and every permission, so one
+  scan sets up everything.
+- **Paste `verification_url` exactly as printed.** It is the same page without the permission
+  list, short enough to copy safely. Never shorten or re-encode it.
 
 Then, in the same turn, wait:
 
@@ -78,9 +79,10 @@ If your runtime ends your turn as soon as you message the operator, nothing is l
 registration keeps running in the background. Run `wait` first thing in your next turn; it
 returns at once when the operator has already finished.
 
-That one scan creates the app under your name with the bot capability and the message event,
-requests every scope in `scopes/bot-scopes.txt`, and publishes the app. The operator does no
-console work. Step 2 confirms what was actually granted.
+Scanning the code creates the app under your name with the bot capability and the message
+event, requests every scope in `scopes/bot-scopes.txt`, and publishes the app. Opening the link
+does the same with the platform's default permissions only. The operator does no console work
+either way, and step 2 tells you which of the two happened.
 
 ### 2. Check permissions
 
@@ -89,10 +91,14 @@ python3 scripts/onboard.py scopes
 ```
 
 - `complete`: everything was granted. Say nothing about scopes.
-- `partial` or `unknown`: the bridge works. Keep going; mention `apply_url` once, in your final
-  setup message.
-- `blocked`: the bridge cannot receive messages yet (missing scope, or the tenant admin has not
-  approved the app). Send `apply_url` with its QR image, then run `scopes --wait 600`.
+- `partial` or `unknown`: the bridge works (the operator used the link, or the tenant applied
+  only its default permissions). Keep going; attach `apply_qr_png` once, in your final setup
+  message. Scanning it adds the rest.
+- `blocked`: the bridge cannot receive messages yet (a required scope or the message event is
+  missing, or the tenant admin has not approved the app). Send `apply_qr_png` now, then run
+  `scopes --wait 600`.
+
+Permission links are long, so they are given to you as QR images, never as text to copy.
 
 ### 3. Install and start the relay
 
@@ -107,7 +113,7 @@ spool, so nothing is lost.
 ### 4. Create your two routines
 
 Create both yourself. Do not ask the operator to write them. Each command prints the routine's
-instruction text and nothing else:
+instruction text and nothing else (redirect it to a file if your routine tool takes one):
 
 | Routine | Trigger | Instruction |
 | --- | --- | --- |
@@ -116,16 +122,18 @@ instruction text and nothing else:
 
 ### 5. Connect the webhook
 
-You cannot read your own webhook URL or key; only the operator can see them. In this order:
+You cannot read your own webhook URL or key; only the operator can see them. The order matters:
+a secret card that appears before the explanation leaves the operator guessing what to paste.
 
-1. Tell the operator where both are, before you ask for anything:
+1. **First, message the operator** where both values are:
 
    > Open the **Lark message handler** routine on desktop. Its **Webhook** section shows
    > **POST to** and **key**; clicking a field copies it. Paste the **POST to** URL here, and
    > put the **key** in the secure card I am about to show you.
 
-2. Request a secure secret card named `LARK_BOT_WEBHOOK_KEY`. Never ask for the key in chat.
-3. When you have the URL and the card is saved, run:
+2. **Then request the card**: a secure secret named `LARK_BOT_WEBHOOK_KEY`. Never ask for the
+   key in chat.
+3. **When you have the URL and the card is saved**, run:
 
    ```bash
    python3 scripts/onboard.py webhook --url '<POST to URL>'
@@ -146,7 +154,8 @@ The routine's instruction tells you to end that run without doing anything.
 ```
 
 `status: healthy` means the bridge is live. Tell the operator in one message: the bot's name in
-Feishu/Lark, "send me a DM to try it", and (only if step 2 was `partial`) the `apply_url`.
+Feishu/Lark, "send me a DM to try it", and (only if step 2 was not `complete`) the
+`apply_qr_png` image with one line saying that scanning it adds the remaining permissions.
 
 ## When a message wakes you
 
@@ -167,8 +176,9 @@ exact reply command for this bot; use it as given.
 - The relay owns the "working" reaction. Do not add or remove it. For a long task, send a short
   acknowledgement first, then the result.
 - Reply in the sender's language. Every sender is an ordinary user; nobody is a special owner.
-- A permission error (`app_scope_not_applied` or `missing_scope`) carries a `console_url`. Give
-  that link to the sender and say which scope is missing.
+- A permission error (`app_scope_not_applied` or `missing_scope`) names the missing scope and
+  carries a `console_url` that pre-selects it. Tell the sender which scope is missing and give
+  them that link; without one, give the payload's `console_url`, the app's permission page.
 
 ## Operate
 
