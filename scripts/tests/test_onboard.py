@@ -67,11 +67,10 @@ class AppTests(OnboardCase):
             "result. Then immediately run: python3 scripts/onboard.py wait --bot t1",
         )
 
-    def test_printed_url_carries_the_one_config_scope(self) -> None:
+    def test_printed_url_carries_every_scope(self) -> None:
         out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
         url = out["verification_url"]
         self.assertTrue(url.startswith(LAUNCHER_BASE + "&"), url)
-        self.assertLess(len(url), 400)
         query = parse_qs(urlparse(url).query)
         self.assertEqual(query["user_code"], ["ABCD-EFGH"])
         self.assertEqual(query["name"], ["t1"])
@@ -81,8 +80,8 @@ class AppTests(OnboardCase):
         self.assertEqual(
             scope_link.decode_addons(query["addons"][0]),
             {
-                "scopes": {"tenant": [scope_link.APP_CONFIG_SCOPE], "user": []},
-                "events": {"items": {"tenant": [], "user": []}},
+                "scopes": {"tenant": REQUIRED + [scope_link.APP_CONFIG_SCOPE], "user": []},
+                "events": {"items": {"tenant": [EVENT], "user": []}},
             },
         )
         self.assertEqual(scope_link.APP_CONFIG_SCOPE, "application:application:patch")
@@ -114,7 +113,7 @@ class AppTests(OnboardCase):
         self.assertIn("&addons=", qr["argv"][2])
         self.assertEqual(qr["argv"][3:5], ["--output", "app-qr.png"])
         self.assertIn("grokbot-lark-", qr["cwd"])
-        self.assertEqual(qr["argv"][5:], ["--size", "512"])  # the link is short
+        self.assertEqual(qr["argv"][5:], ["--size", "1024"])  # the link carries every scope
 
     def test_a_long_link_gets_a_larger_qr(self) -> None:
         self.run_onboard(["app", "--bot", "t1", "--desc", "d" * 300])
