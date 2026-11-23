@@ -16,6 +16,7 @@ Start with the health report. It ends with `status: healthy`, or with `status: u
 | `relay_crashing` | The supervisor is up but `relay.py` or its event consumer keeps exiting. | Read `logs/relay.err` and `logs/consume.stderr.log`. The usual causes are below. |
 | `duplicate_consumer` | More than one event consumer runs under this relay. | `~/.lark-relay/stop.sh`, then `~/.lark-relay/start.sh`. |
 | `never_ready` | The long connection has never come up. | Read `logs/consume.stderr.log`; then `python3 scripts/onboard.py scopes`. |
+| `bot_open_id_missing` | The relay does not know the bot's own `open_id`, so it cannot see that a group message @mentions the bot. Direct messages still work. | `python3 scripts/onboard.py relay --start` reads it from the app (or keeps the one the relay used before) and writes it to `relay.env`. |
 | `webhook_unconfigured` | No webhook URL or key. Messages are kept in the spool. | `SKILL.md` step 5. |
 | `forwarding_stalled` | Messages have waited in the spool for more than a minute. | Check the URL and key, that the handler routine is not paused, and `webhook_post_failed` entries in `logs/relay.jsonl`. |
 

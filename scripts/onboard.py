@@ -896,12 +896,40 @@ def update_env_text(existing: str, values: Dict[str, Optional[str]]) -> str:
             done.add(key)
             if values[key] is not None:
                 lines.append(f"{key}={shlex.quote(values[key] or '')}")
+            else:
+                lines.append(raw)  # nothing new is known: keep what is there
             continue
         lines.append(raw)
     for key, value in values.items():
         if key not in done and value is not None:
             lines.append(f"{key}={shlex.quote(value)}")
     return "\n".join(lines) + "\n"
+
+
+def previous_bot_open_id(relay_dir: Path) -> Optional[str]:
+    """The open_id an installed relay last started with, taken from its own log.
+
+    An install made before relay.env existed kept the open_id only in the shell
+    that started the supervisor. The relay logged it at every start.
+    """
+    path = relay_dir / "logs" / "relay.jsonl"
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 4 * 1024 * 1024))
+            tail = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw in reversed(tail.splitlines()):
+        if '"relay_start"' not in raw:
+            continue
+        try:
+            value = json.loads(raw).get("bot_open_id")
+        except ValueError:
+            continue
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def install_relay(relay_dir: Path) -> bool:
@@ -980,13 +1008,20 @@ def cmd_relay(args: argparse.Namespace) -> int:
         existing = ""
     # One relay directory serves one bot. Installing a second bot into it would
     # make both answer through the same app.
-    owner = read_env_file(relay_env).get("LARK_BOT_ENV", "").strip()
+    settings = read_env_file(relay_env)
+    owner = settings.get("LARK_BOT_ENV", "").strip()
     if owner and Path(os.path.expandvars(os.path.expanduser(owner))) != store.env_sh:
         raise OnboardError(
             f"{relay_dir} already belongs to another bot ({owner})",
             f"{next_cmd('relay', args.bot, '--relay-dir ~/.lark-relay-' + args.bot)}"
             + (" --start" if args.start else ""),
         )
+    if not open_id:
+        # The API did not tell us. Keep what this relay already used.
+        open_id = settings.get("LARK_BOT_OPEN_ID", "").strip() or previous_bot_open_id(relay_dir)
+        if open_id:
+            info["bot_open_id"] = open_id
+            store.write_json(store.app_json, info)
     upgraded = install_relay(relay_dir)
     if not existing.strip():
         existing = (
@@ -1025,6 +1060,11 @@ def cmd_relay(args: argparse.Namespace) -> int:
         f"bot_open_id: {open_id or 'unknown'}",
         f"webhook: {'configured' if configured else 'not configured'}",
     )
+    if not open_id:
+        out(
+            "warning: the bot open_id is unknown, so group @mentions will not be forwarded "
+            f"(direct messages still are). Set LARK_BOT_OPEN_ID in {relay_env} and restart the relay."
+        )
     code = 0
     if args.start:
         stop, start = relay_dir / "stop.sh", relay_dir / "start.sh"

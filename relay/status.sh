@@ -39,6 +39,14 @@ if ! command -v lark-cli >/dev/null 2>&1; then
   add_problem lark_cli_missing "reinstall it: npm install -g @larksuite/cli"
 fi
 
+# Without the bot's own open_id the relay cannot tell that a group message @mentions it.
+if [[ -n "${LARK_BOT_OPEN_ID:-}" ]]; then
+  echo "bot open_id: set"
+else
+  echo "bot open_id: not set"
+  add_problem bot_open_id_missing "group @mentions are not forwarded; run python3 scripts/onboard.py relay --start from the skill repository, or set LARK_BOT_OPEN_ID in ${BASE}/relay.env and restart"
+fi
+
 if [[ -f "${PID_FILE}" ]]; then
   spid="$(cat "${PID_FILE}" 2>/dev/null || true)"
   if [[ -n "${spid}" ]] && kill -0 "${spid}" 2>/dev/null; then
