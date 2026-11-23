@@ -31,7 +31,6 @@ class AppTests(OnboardCase):
         self.assertEqual(out["status"], "waiting_for_scan")
         self.assertEqual(out["bot"], "t1")
         self.assertEqual(out["app_name"], "t1")
-        self.assertEqual(out["qr_carries"], f"app name, {len(REQUIRED)} bot scopes, {EVENT}")
         self.assertIn("python3 scripts/onboard.py wait --bot t1", out["next"])
         self.assertTrue(Path(out["qr_png"]).is_file())
 
@@ -47,56 +46,54 @@ class AppTests(OnboardCase):
         self.assertIn(f'export LARKSUITE_CLI_DATA_DIR="{store / "data"}"', text)
         self.assertIn(f'export LARKSUITE_CLI_LOG_DIR="{store / "logs"}"', text)
         state = json.loads((store / "app-init.json").read_text())
-        for key in ("pid", "url", "full_url", "qr_png", "out_log", "err_log", "started_at", "name"):
+        for key in ("pid", "url", "qr_png", "out_log", "err_log", "started_at", "name"):
             self.assertIn(key, state)
         self.assertEqual(state["url"], out["verification_url"])
-        self.assertNotEqual(state["full_url"], state["url"])
 
     def test_output_lines_and_order(self) -> None:
         proc = self.run_onboard(["app", "--bot", "t1"])
         keys = [line.split(": ", 1)[0] for line in proc.stdout.splitlines()]
         self.assertEqual(
             keys,
-            ["status", "bot", "app_name", "qr_png", "qr_carries", "verification_url", "next"],
+            ["status", "bot", "app_name", "qr_png", "verification_url", "next"],
         )
-        self.assertNotIn("scopes_preset", proc.stdout)
-        nxt = kv(proc.stdout)["next"]
-        self.assertTrue(nxt.startswith("Send the operator ONE message now: attach the QR image"), nxt)
-        self.assertIn("paste verification_url exactly as printed", nxt)
 
-    def test_printed_url_is_short_and_has_no_scopes(self) -> None:
+    def test_next_sends_one_message_with_the_qr_and_the_link(self) -> None:
+        nxt = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)["next"]
+        self.assertEqual(
+            nxt,
+            "Send the operator ONE message now: attach the QR image and paste verification_url "
+            "exactly as printed. Both open the same page, so scanning and clicking give the same "
+            "result. Then immediately run: python3 scripts/onboard.py wait --bot t1",
+        )
+
+    def test_printed_url_carries_the_one_config_scope(self) -> None:
         out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
         url = out["verification_url"]
         self.assertTrue(url.startswith(LAUNCHER_BASE + "&"), url)
         self.assertLess(len(url), 400)
-        self.assertNotIn("addons=", url)
         query = parse_qs(urlparse(url).query)
         self.assertEqual(query["user_code"], ["ABCD-EFGH"])
         self.assertEqual(query["name"], ["t1"])
         self.assertEqual(query["desc"], ["Grok Bot"])
         self.assertEqual(query["createOnly"], ["true"])
-        self.assertTrue(url.endswith("createOnly=true"))
+        self.assertEqual(url.count("addons="), 1)
+        self.assertEqual(
+            scope_link.decode_addons(query["addons"][0]),
+            {
+                "scopes": {"tenant": [scope_link.APP_CONFIG_SCOPE], "user": []},
+                "events": {"items": {"tenant": [], "user": []}},
+            },
+        )
+        self.assertEqual(scope_link.APP_CONFIG_SCOPE, "application:application:patch")
+        # name, desc, [avatar], addons, createOnly: the order the page documents
+        self.assertRegex(url, r"&name=[^&]*&desc=[^&]*&addons=[^&]+&createOnly=true$")
 
-    def test_qr_carries_the_full_url(self) -> None:
+    def test_qr_is_generated_from_the_printed_url(self) -> None:
         out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
-        short = out["verification_url"]
         qr_calls = self.calls_matching("auth", "qrcode")
         self.assertEqual(len(qr_calls), 1)
-        full = qr_calls[0]["argv"][2]
-        self.assertTrue(full.startswith(LAUNCHER_BASE + "&"), full)
-        self.assertTrue(full.endswith("&createOnly=true"), full)
-        self.assertNotEqual(full, short)
-        query = parse_qs(urlparse(full).query)
-        self.assertEqual(query["name"], ["t1"])
-        self.assertEqual(query["desc"], ["Grok Bot"])
-        self.assertEqual(query["createOnly"], ["true"])
-        addons = scope_link.decode_addons(query["addons"][0])
-        self.assertEqual(addons["scopes"]["tenant"], REQUIRED)
-        self.assertEqual(addons["scopes"]["user"], [])
-        self.assertEqual(addons["events"]["items"]["tenant"], [EVENT])
-        # the short link is the full one minus addons
-        raw_addons = full.split("&addons=")[1].split("&")[0]
-        self.assertEqual(full.replace("&addons=" + raw_addons, ""), short)
+        self.assertEqual(qr_calls[0]["argv"][2], out["verification_url"])
 
     def test_every_cli_call_uses_the_bot_store(self) -> None:
         self.run_onboard(["app", "--bot", "t1"])
@@ -117,7 +114,13 @@ class AppTests(OnboardCase):
         self.assertIn("&addons=", qr["argv"][2])
         self.assertEqual(qr["argv"][3:5], ["--output", "app-qr.png"])
         self.assertIn("grokbot-lark-", qr["cwd"])
-        self.assertEqual(qr["argv"][5:], ["--size", "1024"])  # long URL
+        self.assertEqual(qr["argv"][5:], ["--size", "512"])  # the link is short
+
+    def test_a_long_link_gets_a_larger_qr(self) -> None:
+        self.run_onboard(["app", "--bot", "t1", "--desc", "d" * 300])
+        qr = self.calls_matching("auth", "qrcode")[0]
+        self.assertGreaterEqual(len(qr["argv"][2]), 300)
+        self.assertEqual(qr["argv"][5:], ["--size", "1024"])
 
     def test_name_and_desc_are_percent_encoded(self) -> None:
         proc = self.run_onboard(
@@ -129,6 +132,7 @@ class AppTests(OnboardCase):
         self.assertIn("&desc=a%26b%20c&", url)
         self.assertIn("&avatar=https%3A%2F%2Fimg.example%2Fa.png%3Fx%3D1%26y%3D2&", url)
         self.assertIn("&avatar=https%3A%2F%2Fimg.example%2Fb.png&", url)
+        self.assertRegex(url, r"&avatar=[^&]*&addons=[^&]+&createOnly=true$")
         query = parse_qs(urlparse(url).query)
         self.assertEqual(query["name"], ["Grok Bot 机器人"])
         self.assertEqual(kv(proc.stdout)["app_name"], "Grok Bot 机器人")
@@ -136,14 +140,13 @@ class AppTests(OnboardCase):
     def test_no_scopes_omits_addons(self) -> None:
         proc = self.run_onboard(["app", "--bot", "t1", "--no-scopes"])
         out = kv(proc.stdout)
-        self.assertNotIn("addons=", out["verification_url"])
-        self.assertEqual(out["qr_carries"], "app name")
-        self.assertIn("createOnly=true", out["verification_url"])
+        self.assertNotIn("addons", out["verification_url"])
+        self.assertTrue(out["verification_url"].endswith("&desc=Grok%20Bot&createOnly=true"), out["verification_url"])
         qr = self.calls_matching("auth", "qrcode")[0]
         self.assertEqual(qr["argv"][2], out["verification_url"])
         state = json.loads((self.store("t1") / "app-init.json").read_text())
-        self.assertEqual(state["url"], state["full_url"])
-        self.assertEqual(qr["argv"][-2:], ["--size", "512"])  # short URL
+        self.assertEqual(state["url"], out["verification_url"])
+        self.assertEqual(qr["argv"][-2:], ["--size", "512"])
 
     def test_qr_failure_is_not_fatal(self) -> None:
         self.flag("qr-fail")
@@ -152,6 +155,7 @@ class AppTests(OnboardCase):
         out = kv(proc.stdout)
         self.assertEqual(out["status"], "waiting_for_scan")
         self.assertTrue(out["qr_png"].startswith("unavailable ("), out["qr_png"])
+        self.assertTrue(out["verification_url"].startswith(LAUNCHER_BASE + "&"))
 
     def test_second_run_while_pending_starts_no_second_process(self) -> None:
         first = self.run_onboard(["app", "--bot", "t1"])
@@ -163,11 +167,10 @@ class AppTests(OnboardCase):
         self.assertEqual(a["verification_url"], b["verification_url"])
         self.assertEqual(len(self.calls_matching("config", "init", "--new")), 1)
         self.assertEqual(pid1, json.loads((self.store("t1") / "app-init.json").read_text())["pid"])
-        self.assertEqual(a["qr_carries"], b["qr_carries"])
+        self.assertEqual(second.stdout, first.stdout)
 
-    def test_qr_is_regenerated_from_the_full_url(self) -> None:
+    def test_qr_is_regenerated_from_the_printed_url(self) -> None:
         first = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
-        full = self.calls_matching("auth", "qrcode")[0]["argv"][2]
         Path(first["qr_png"]).unlink()
         second = self.run_onboard(["app", "--bot", "t1"])
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
@@ -176,18 +179,7 @@ class AppTests(OnboardCase):
         self.assertTrue(Path(out["qr_png"]).is_file())
         qr_calls = self.calls_matching("auth", "qrcode")
         self.assertEqual(len(qr_calls), 2)
-        self.assertEqual(qr_calls[1]["argv"][2], full)
-
-    def test_regeneration_falls_back_to_url_for_an_old_state_file(self) -> None:
-        first = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
-        path = self.store("t1") / "app-init.json"
-        state = json.loads(path.read_text())
-        del state["full_url"]
-        path.write_text(json.dumps(state))
-        Path(first["qr_png"]).unlink()
-        out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
-        self.assertTrue(Path(out["qr_png"]).is_file())
-        self.assertEqual(self.calls_matching("auth", "qrcode")[1]["argv"][2], first["verification_url"])
+        self.assertEqual(qr_calls[1]["argv"][2], first["verification_url"])
 
     def test_registration_is_detached_and_logged(self) -> None:
         self.run_onboard(["app", "--bot", "t1"])
@@ -358,6 +350,16 @@ class WaitTests(OnboardCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(kv(proc.stdout)["status"], "ready")
 
+    def test_bot_info_is_read_from_the_raw_api_shape_too(self) -> None:
+        # The default fake answers like current lark-cli (fields under "data"); this is the
+        # shape of the API itself, which older lark-cli versions printed unchanged.
+        self.flag("bot-info-legacy")
+        self.run_onboard(["app", "--bot", "t1"])
+        self.flag("scan-done")
+        out = kv(self.run_onboard(["wait", "--bot", "t1", "--timeout", "20"]).stdout)
+        self.assertEqual(out["bot_open_id"], "ou_fakebot")
+        self.assertEqual(out["bot_name"], "Fake Bot")
+
     def test_bot_info_failure_is_best_effort(self) -> None:
         self.flag("bot-info-fail")
         self.run_onboard(["app", "--bot", "t1"])
@@ -441,6 +443,16 @@ class ImportTests(OnboardCase):
 
 
 class ScopesTests(OnboardCase):
+    RELAY = "python3 scripts/onboard.py relay --bot t1 --start"
+    WAIT = "python3 scripts/onboard.py scopes --bot t1 --wait 600"
+    AGAIN = "python3 scripts/onboard.py scopes --bot t1"
+    SCOPES_PATH = "/open-apis/application/v6/scopes"
+    CONFIG_PATH = "/open-apis/application/v7/applications/cli_imp/config"
+    PUBLISH_PATH = "/open-apis/application/v7/applications/cli_imp/publish"
+    GRANT_URL = (
+        "https://open.feishu.cn/page/scope-apply?clientID=cli_imp&scopes=application%3Aapplication%3Apatch"
+    )
+
     def setUp(self) -> None:
         super().setUp()
         self.configure("t1", "cli_imp")
@@ -450,105 +462,25 @@ class ScopesTests(OnboardCase):
     def set_bridge(self, decision: dict) -> None:
         (self.ctl / "bridge.json").write_text(json.dumps(decision))
 
-    def set_granted(self, entries: list) -> None:
-        (self.ctl / "scopes.json").write_text(json.dumps(entries))
-
-    @staticmethod
-    def entry(scope: str, types=("tenant",)) -> dict:
-        item = {"scope": scope}
-        if types is not None:
-            item["token_types"] = list(types)
-        return item
-
     def scopes(self, *extra: str):
         return self.run_onboard(["scopes", "--bot", "t1"] + list(extra))
 
-    def test_complete(self) -> None:
-        entries = [self.entry(s) for s in REQUIRED[:-1]] + [self.entry(REQUIRED[-1], None)]
-        entries.append(self.entry("extra:scope", ["user"]))
-        self.set_granted(entries)
-        proc = self.scopes()
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        out = kv(proc.stdout)
-        self.assertEqual(out["status"], "complete")
-        self.assertEqual(out["bridge_ready"], "yes")
-        self.assertEqual(out["granted"], f"{len(REQUIRED)}/{len(REQUIRED)}")
-        for key in ("apply_url", "apply_qr_png", "permissions_page", "fallback_url", "missing"):
-            self.assertNotIn(key, out)
-        self.assertEqual(out["next"], "python3 scripts/onboard.py relay --bot t1 --start")
-        call = self.calls_matching("api", "GET", "/open-apis/application/v6/applications/cli_imp")[0]
-        self.assertIn('{"lang":"zh_cn"}', call["argv"])
-        self.assertIn("--as", call["argv"])
+    def patches(self) -> list:
+        return self.calls_matching("api", "PATCH")
 
-    def test_partial(self) -> None:
-        missing = [REQUIRED[0], REQUIRED[5], REQUIRED[-1]]
-        entries = [self.entry(s) for s in REQUIRED if s not in missing]
-        entries.append(self.entry(REQUIRED[7], ["user"]))  # user-only does not count
-        missing.append(REQUIRED[7])
-        entries = [e for e in entries if not (e["scope"] == REQUIRED[7] and e["token_types"] == ["tenant"])]
-        self.set_granted(entries)
-        proc = self.scopes()
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        out = kv(proc.stdout)
-        expected = [s for s in REQUIRED if s in missing]
-        self.assertEqual(out["status"], "partial")
-        self.assertEqual(out["bridge_ready"], "yes")
-        self.assertEqual(out["granted"], f"{len(REQUIRED) - len(expected)}/{len(REQUIRED)}")
-        self.assertEqual(out["missing"].split(","), expected)
-        self.assert_qr_only(proc.stdout, expected)
-        self.assertTrue(Path(out["apply_qr_png"]).is_file())
-        self.assertEqual(Path(out["apply_qr_png"]).name, "scopes-qr.png")
-        self.assertEqual(
-            out["next"],
-            "Continue with: python3 scripts/onboard.py relay --bot t1 --start. In your final setup "
-            "message, attach apply_qr_png once and say that scanning it adds the remaining "
-            "permissions; do not wait for it.",
-        )
+    def publishes(self) -> list:
+        return self.calls_matching("api", "POST")
 
-    def assert_qr_only(self, stdout: str, expected: list) -> None:
-        """With a working QR the output has no long link, and the QR carries the launcher link."""
-        out = kv(stdout)
-        self.assertEqual(out["permissions_page"], "https://open.feishu.cn/app/cli_imp/auth")
-        for key in ("apply_url", "fallback_url", "fallback_note"):
-            self.assertNotIn(key, out)
-        qr_calls = self.calls_matching("auth", "qrcode")
-        self.assertEqual(len(qr_calls), 1)
-        url = urlparse(qr_calls[0]["argv"][2])
-        self.assertEqual(url.path, "/page/launcher")
-        query = parse_qs(url.query)
-        self.assertEqual(query["clientID"], ["cli_imp"])
-        addons = scope_link.decode_addons(query["addons"][0])
-        self.assertEqual(addons["scopes"]["tenant"], expected)
-        self.assertEqual(qr_calls[0]["argv"][3:5], ["--output", "scopes-qr.png"])
+    def assert_no_changes_made(self) -> None:
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(self.publishes(), [])
 
-    def test_partial_with_a_failing_qr_prints_the_links(self) -> None:
-        missing = [REQUIRED[0], REQUIRED[5]]
-        self.set_granted([self.entry(s) for s in REQUIRED if s not in missing])
-        self.flag("qr-fail")
-        proc = self.scopes()
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        out = kv(proc.stdout)
-        self.assertTrue(out["apply_qr_png"].startswith("unavailable ("), out["apply_qr_png"])
-        self.assertNotIn("permissions_page", out)
-        url = urlparse(out["apply_url"])
-        self.assertEqual(url.path, "/page/launcher")
-        query = parse_qs(url.query)
-        self.assertEqual(query["clientID"], ["cli_imp"])
-        addons = scope_link.decode_addons(query["addons"][0])
-        self.assertEqual(addons["scopes"]["tenant"], missing)
-        fb = urlparse(out["fallback_url"])
-        self.assertEqual(fb.path, "/page/scope-apply")
-        self.assertEqual(parse_qs(fb.query)["scopes"][0].split(","), missing)
-        self.assertIn("publish a new app version", out["fallback_note"])
-        self.assertEqual(
-            out["next"],
-            "Continue with: python3 scripts/onboard.py relay --bot t1 --start. In your final setup "
-            "message, send apply_url exactly as printed; do not wait for it.",
-        )
+    def assert_no_grant_link(self, out: dict) -> None:
+        self.assertNotIn("grant_url", out)
+        self.assertNotIn("grant_qr_png", out)
+        self.assertEqual(self.calls_matching("auth", "qrcode"), [])
 
-    def test_blocked(self) -> None:
-        missing = [REQUIRED[2], REQUIRED[9]]
-        self.set_granted([self.entry(s) for s in REQUIRED if s not in missing])
+    def blocked_bridge(self) -> None:
         self.set_bridge(
             {
                 "status": "blocked",
@@ -559,58 +491,367 @@ class ScopesTests(OnboardCase):
                 ],
             }
         )
+
+    # -- everything granted
+
+    def test_complete(self) -> None:
+        self.set_scopes(granted=REQUIRED, user=["extra:scope"])
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "complete")
+        self.assertEqual(out["bridge_ready"], "yes")
+        self.assertEqual(out["granted"], f"{len(REQUIRED)}/{len(REQUIRED)}")
+        for key in ("added", "apply_error", "review", "missing"):
+            self.assertNotIn(key, out)
+        self.assert_no_grant_link(out)
+        self.assertEqual(out["permissions_page"], "https://open.feishu.cn/app/cli_imp/auth")
+        self.assertEqual(out["next"], self.RELAY)
+        self.assert_no_changes_made()
+        call = self.calls_matching("api", "GET", self.SCOPES_PATH)[0]
+        self.assertEqual(call["argv"], ["api", "GET", self.SCOPES_PATH, "--as", "bot"])
+
+    def test_complete_makes_no_change_even_when_the_app_could_add_scopes(self) -> None:
+        self.set_scopes(granted=REQUIRED, config=True)
+        out = kv(self.scopes().stdout)
+        self.assertEqual(out["status"], "complete")
+        self.assertNotIn("added", out)
+        self.assert_no_changes_made()
+
+    # -- the app adds the scopes itself
+
+    def test_missing_scopes_are_added_through_the_api(self) -> None:
+        missing = [REQUIRED[0], REQUIRED[5], REQUIRED[7], REQUIRED[-1]]
+        expected = [s for s in REQUIRED if s in missing]
+        # a scope held only for user tokens does not count as granted for the bot
+        self.set_scopes(granted=[s for s in REQUIRED if s not in missing], config=True, user=[REQUIRED[7]])
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "complete")
+        self.assertEqual(out["added"], str(len(expected)))
+        self.assertEqual(out["granted"], f"{len(REQUIRED)}/{len(REQUIRED)}")
+        for key in ("apply_error", "review", "missing"):
+            self.assertNotIn(key, out)
+        self.assert_no_grant_link(out)
+        self.assertEqual(out["next"], self.RELAY)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0]["argv"], ["api", "PATCH", self.CONFIG_PATH, "--as", "bot", "--data", "-"])
+        self.assertEqual(
+            patches[0]["body"],
+            {"scope": {"add_scopes": [{"scope_name": s, "token_type": "tenant"} for s in expected]}},
+        )
+        self.assertEqual(self.publishes(), [])
+        tenant = {i["scope_name"] for i in self.scope_items() if i["scope_type"] == "tenant"}
+        self.assertTrue(set(REQUIRED) <= tenant)
+
+    def test_a_failed_add_is_reported_and_nothing_is_published(self) -> None:
+        missing = [REQUIRED[1], REQUIRED[2]]
+        self.set_scopes(granted=[s for s in REQUIRED if s not in missing], config=True)
+        self.flag("patch-fail")
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "partial")
+        self.assertEqual(out["apply_error"], "invalid request")
+        self.assertEqual(len(lines_for(proc.stdout, "apply_error")), 1)
+        self.assertEqual(out["missing"].split(","), missing)
+        self.assertEqual(out["granted"], f"{len(REQUIRED) - 2}/{len(REQUIRED)}")
+        for key in ("added", "review"):
+            self.assertNotIn(key, out)
+        self.assert_no_grant_link(out)
+        self.assertEqual(len(self.patches()), 1)
+        self.assertEqual(self.publishes(), [])
+        self.assertEqual(
+            out["next"],
+            f"Continue with: {self.RELAY}. In your final setup message, say that some permissions "
+            "could not be added automatically and give permissions_page.",
+        )
+        self.assertEqual(out["permissions_page"], "https://open.feishu.cn/app/cli_imp/auth")
+
+    def test_scopes_that_stay_pending_are_released_for_approval(self) -> None:
+        missing = [REQUIRED[3], REQUIRED[4], REQUIRED[-1]]
+        self.set_scopes(granted=[s for s in REQUIRED if s not in missing], config=True)
+        self.flag("patch-pending")
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["review"], "release 1.0.3 submitted")
+        self.assertEqual(out["status"], "partial")
+        self.assertEqual(out["added"], "3")
+        self.assertEqual(out["missing"].split(","), missing)
+        self.assertNotIn("apply_error", out)
+        self.assert_no_grant_link(out)
+        self.assertEqual(len(self.patches()), 1)
+        publishes = self.publishes()
+        self.assertEqual(len(publishes), 1)
+        self.assertEqual(publishes[0]["argv"], ["api", "POST", self.PUBLISH_PATH, "--as", "bot", "--data", "-"])
+        body = publishes[0]["body"]
+        self.assertEqual(body["mobile_default_ability"], "bot")
+        self.assertEqual(body["pc_default_ability"], "bot")
+        self.assertTrue(body["remark"] and body["changelog"])
+        self.assertEqual(
+            out["next"],
+            f"Continue with: {self.RELAY}. In your final setup message, say that the remaining "
+            "permissions take effect once a tenant admin approves the app release.",
+        )
+
+    def test_a_release_that_grants_the_scopes_completes(self) -> None:
+        missing = [REQUIRED[3], REQUIRED[4]]
+        self.set_scopes(granted=[s for s in REQUIRED if s not in missing], config=True)
+        self.flag("patch-pending")
+        self.flag("publish-grants")
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "complete")
+        self.assertEqual(out["added"], "2")
+        self.assertEqual(out["review"], "release 1.0.3 submitted")
+        self.assertEqual(out["granted"], f"{len(REQUIRED)}/{len(REQUIRED)}")
+        self.assertNotIn("missing", out)
+        self.assertEqual(out["next"], self.RELAY)
+        self.assertEqual(len(self.patches()), 1)
+        self.assertEqual(len(self.publishes()), 1)
+
+    def test_a_later_run_with_pending_scopes_only_publishes_again(self) -> None:
+        pending = [REQUIRED[3], REQUIRED[4]]
+        self.set_scopes(granted=[s for s in REQUIRED if s not in pending], pending=pending, config=True)
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "partial")
+        self.assertEqual(out["review"], "release 1.0.3 submitted")
+        self.assertEqual(out["missing"].split(","), pending)
+        self.assertNotIn("added", out)
+        self.assertEqual(self.patches(), [])  # they are asked for already
+        self.assertEqual(len(self.publishes()), 1)
+
+    def test_a_release_that_cannot_be_submitted_is_reported(self) -> None:
+        pending = [REQUIRED[3]]
+        self.set_scopes(granted=[s for s in REQUIRED if s not in pending], pending=pending, config=True)
+        self.flag("publish-fail")
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "partial")
+        self.assertEqual(
+            out["review"],
+            "no release submitted (Unable to submit the release request, as the app is currently "
+            "under review.)",
+        )
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(len(self.publishes()), 1)
+        self.assertEqual(
+            out["next"],
+            f"Continue with: {self.RELAY}. In your final setup message, say that the remaining "
+            "permissions take effect once a tenant admin approves the app release.",
+        )
+
+    # -- the app cannot add scopes yet: one confirmation by the operator
+
+    def test_without_the_config_scope_the_operator_is_asked_once(self) -> None:
+        missing = [REQUIRED[0], REQUIRED[5], REQUIRED[-1]]
+        expected = [s for s in REQUIRED if s in missing]
+        self.set_scopes(granted=[s for s in REQUIRED if s not in missing])
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "partial")
+        self.assertEqual(out["bridge_ready"], "yes")
+        self.assertEqual(out["granted"], f"{len(REQUIRED) - 3}/{len(REQUIRED)}")
+        self.assertEqual(out["missing"].split(","), expected)
+        self.assertEqual(out["grant_url"], self.GRANT_URL)
+        self.assertEqual(Path(out["grant_qr_png"]).name, "grant-qr.png")
+        self.assertTrue(Path(out["grant_qr_png"]).is_file())
+        self.assertEqual(out["permissions_page"], "https://open.feishu.cn/app/cli_imp/auth")
+        for key in ("added", "apply_error", "review"):
+            self.assertNotIn(key, out)
+        qr_calls = self.calls_matching("auth", "qrcode")
+        self.assertEqual(len(qr_calls), 1)
+        self.assertEqual(qr_calls[0]["argv"][2], self.GRANT_URL)
+        self.assertEqual(qr_calls[0]["argv"][3:5], ["--output", "grant-qr.png"])
+        self.assert_no_changes_made()
+        self.assertEqual(
+            out["next"],
+            "Send the operator ONE message now: paste grant_url exactly as printed and attach "
+            "grant_qr_png (both open the same page). One confirmation there lets you add the "
+            f"missing permissions yourself. Then immediately run: {self.WAIT}",
+        )
+
+    def test_grant_url_asks_for_the_config_scope_only(self) -> None:
+        self.set_scopes(granted=REQUIRED[:-1])
+        url = urlparse(kv(self.scopes().stdout)["grant_url"])
+        self.assertEqual(url.path, "/page/scope-apply")
+        query = parse_qs(url.query)
+        self.assertEqual(query["clientID"], ["cli_imp"])
+        self.assertEqual(query["scopes"], [scope_link.APP_CONFIG_SCOPE])
+
+    def test_a_failing_qr_leaves_the_link_alone(self) -> None:
+        self.set_scopes(granted=REQUIRED[:-1])
+        self.flag("qr-fail")
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["grant_url"], self.GRANT_URL)
+        self.assertTrue(out["grant_qr_png"].startswith("unavailable ("), out["grant_qr_png"])
+        self.assertEqual(
+            out["next"],
+            "Send the operator ONE message now: paste grant_url exactly as printed. One "
+            f"confirmation there lets you add the missing permissions yourself. Then immediately run: {self.WAIT}",
+        )
+
+    def test_wait_adds_the_scopes_once_the_operator_confirmed(self) -> None:
+        missing = [REQUIRED[0], REQUIRED[-1]]
+        others = [s for s in REQUIRED if s not in missing]
+        self.set_scopes(granted=others)
+        timer = threading.Timer(0.7, lambda: self.set_scopes(granted=others, config=True))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        proc = self.scopes("--wait", "30")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "complete")
+        self.assertEqual(out["added"], "2")
+        self.assertEqual(out["next"], self.RELAY)
+        self.assertNotIn("missing", out)
+        self.assert_no_grant_link(out)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual([i["scope_name"] for i in patches[0]["body"]["scope"]["add_scopes"]], missing)
+        self.assertEqual(self.publishes(), [])
+
+    def test_wait_without_a_confirmation_ends_partial(self) -> None:
+        self.set_scopes(granted=REQUIRED[:-1])
+        proc = self.scopes("--wait", "1")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "partial")
+        self.assertEqual(out["grant_url"], self.GRANT_URL)
+        self.assertEqual(out["missing"], REQUIRED[-1])
+        self.assertGreaterEqual(len(self.calls_matching("event", "consume")), 2)
+        self.assert_no_changes_made()
+        self.assertEqual(
+            out["next"],
+            f"The operator has not confirmed yet. Continue with: {self.RELAY}. In your final setup "
+            "message, repeat grant_url once and ask the operator to tell you when they have "
+            f"confirmed; then run: {self.AGAIN}",
+        )
+
+    # -- the bridge dry-run reports blocked
+
+    def test_blocked_with_missing_scopes_asks_the_operator(self) -> None:
+        missing = [REQUIRED[2], REQUIRED[9]]
+        self.set_scopes(granted=[s for s in REQUIRED if s not in missing])
+        self.blocked_bridge()
         proc = self.scopes()
         self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
         out = kv(proc.stdout)
         self.assertEqual(out["status"], "blocked")
         self.assertEqual(out["bridge_ready"], "no")
         self.assertEqual(lines_for(proc.stdout, "blocker"), ["scopes: missing im:message | grant it"])
+        self.assertEqual(out["missing"].split(","), missing)
+        self.assertEqual(out["grant_url"], self.GRANT_URL)
+        self.assertTrue(Path(out["grant_qr_png"]).is_file())
         self.assertEqual(
             out["next"],
-            "The relay cannot receive messages yet. Send the operator apply_qr_png to scan "
-            "(permissions_page is the manual alternative), then run: "
-            "python3 scripts/onboard.py scopes --bot t1 --wait 600",
+            "The relay cannot receive messages yet. Send the operator ONE message now: paste "
+            "grant_url exactly as printed and attach grant_qr_png (both open the same page). One "
+            f"confirmation there lets you add the missing permissions yourself. Then immediately run: {self.WAIT}",
         )
-        self.assertTrue(Path(out["apply_qr_png"]).is_file())
-        self.assert_qr_only(proc.stdout, missing)
+        self.assert_no_changes_made()
 
-    def test_blocked_with_a_failing_qr_prints_the_link(self) -> None:
-        self.set_granted([self.entry(s) for s in REQUIRED])
-        self.set_bridge({"status": "blocked", "preconditions": []})
+    def test_blocked_with_missing_scopes_and_a_failing_qr(self) -> None:
+        self.set_scopes(granted=REQUIRED[:-1])
+        self.blocked_bridge()
         self.flag("qr-fail")
         proc = self.scopes()
         self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
         out = kv(proc.stdout)
-        self.assertIn("apply_url", out)
-        self.assertIn("fallback_url", out)
-        self.assertTrue(out["apply_qr_png"].startswith("unavailable ("))
+        self.assertTrue(out["grant_qr_png"].startswith("unavailable ("))
         self.assertEqual(
             out["next"],
-            "The relay cannot receive messages yet. Send the operator apply_url exactly as "
-            "printed, then run: python3 scripts/onboard.py scopes --bot t1 --wait 600",
+            "The relay cannot receive messages yet. Send the operator ONE message now: paste "
+            "grant_url exactly as printed. One confirmation there lets you add the missing "
+            f"permissions yourself. Then immediately run: {self.WAIT}",
         )
 
-    def test_unknown(self) -> None:
-        (self.ctl / "bridge.json").unlink()
+    def test_blocked_while_waiting_does_not_ask_again(self) -> None:
+        self.set_scopes(granted=REQUIRED[:-1])
+        self.blocked_bridge()
+        proc = self.scopes("--wait", "1")
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "blocked")
+        self.assertEqual(out["grant_url"], self.GRANT_URL)
+        self.assertEqual(
+            out["next"],
+            "The operator has not confirmed yet. Run the same command again; do not message them again.",
+        )
+
+    def test_blocked_with_nothing_missing_has_no_grant_link(self) -> None:
+        self.set_scopes(granted=REQUIRED)
+        self.set_bridge({"status": "blocked", "preconditions": []})
+        proc = self.scopes()
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual(out["status"], "blocked")
+        self.assertEqual(out["granted"], f"{len(REQUIRED)}/{len(REQUIRED)}")
+        self.assertNotIn("missing", out)
+        self.assert_no_grant_link(out)
+        self.assertEqual(
+            out["next"],
+            "The relay cannot receive messages yet; the blocker lines say why. If a tenant admin "
+            f"has to approve the app, tell the operator. Then run: {self.WAIT}",
+        )
+        self.assert_no_changes_made()
+
+    # -- the scope status cannot be read
+
+    def test_unknown_when_the_scope_status_call_fails(self) -> None:
+        # no scopes.json: the fake's scope call fails
         proc = self.scopes()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         out = kv(proc.stdout)
         self.assertEqual(out["status"], "unknown")
-        self.assertEqual(out["bridge_ready"], "unknown")
+        self.assertEqual(out["bridge_ready"], "yes")
         self.assertEqual(out["granted"], "unknown")
         self.assertNotIn("missing", out)
-        self.assert_qr_only(proc.stdout, REQUIRED)
-        self.assertIn("Continue with", out["next"])
+        self.assert_no_grant_link(out)
+        self.assertEqual(out["permissions_page"], "https://open.feishu.cn/app/cli_imp/auth")
+        self.assert_no_changes_made()
+        self.assertEqual(
+            out["next"],
+            f"Continue with: {self.RELAY}. The permissions could not be read now; run "
+            f"{self.AGAIN} again later.",
+        )
+
+    # -- brand
+
+    def test_lark_apps_use_the_lark_host(self) -> None:
+        proc = self.run_onboard(
+            ["app", "--bot", "lk", "--app-id", "cli_imp", "--brand", "lark"], input="import-secret-value"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.set_scopes(granted=REQUIRED[:-1])
+        out = kv(self.run_onboard(["scopes", "--bot", "lk"]).stdout)
+        self.assertEqual(
+            out["grant_url"],
+            "https://open.larksuite.com/page/scope-apply?clientID=cli_imp&scopes=application%3Aapplication%3Apatch",
+        )
+        self.assertEqual(out["permissions_page"], "https://open.larksuite.com/app/cli_imp/auth")
+
+    # -- waiting
 
     def test_wait_rechecks_until_deadline(self) -> None:
-        self.set_granted([self.entry(s) for s in REQUIRED[:-1]])
+        self.set_scopes(granted=REQUIRED[:-1])
         proc = self.scopes("--wait", "1")
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(kv(proc.stdout)["status"], "partial")
         self.assertGreaterEqual(len(self.calls_matching("event", "consume")), 2)
 
     def test_wait_stops_when_complete(self) -> None:
-        self.set_granted([self.entry(s) for s in REQUIRED])
+        self.set_scopes(granted=REQUIRED)
         proc = self.scopes("--wait", "30")
         self.assertEqual(kv(proc.stdout)["status"], "complete")
         self.assertEqual(len(self.calls_matching("event", "consume")), 1)
@@ -1244,16 +1485,6 @@ class NextCommandTests(OnboardCase):
         self.assertIn("python3 scripts/onboard.py scopes --bot sales", lines["wait"])
         self.assertIn("python3 scripts/onboard.py relay --bot sales --start", lines["scopes"])
         self.assertIn("run: python3 scripts/onboard.py webhook --bot sales.", lines["relay"])
-
-    def test_app_next_asks_for_one_message_with_the_qr(self) -> None:
-        nxt = kv(self.run_onboard(["app"]).stdout)["next"]
-        self.assertEqual(
-            nxt,
-            "Send the operator ONE message now: attach the QR image (scanning it with Feishu or "
-            "Lark creates the app with every permission in one go) and paste verification_url "
-            "exactly as printed for anyone who cannot scan. Then immediately run: "
-            "python3 scripts/onboard.py wait",
-        )
 
     @staticmethod
     def relay_next(bot_flag: str, flags: str) -> str:

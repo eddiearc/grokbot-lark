@@ -47,8 +47,9 @@ echo "== 1. app: link and QR image"
 python3 scripts/onboard.py app --bot e2e --name "Atlas" > "${WORK}/app.out" 2>&1
 rc=$?
 check "app exits 0 and waits for a scan" '[[ ${rc} -eq 0 ]] && grep -q "^status: waiting_for_scan" "${WORK}/app.out"'
-check "printed link carries name and createOnly but no scopes" 'grep -q "^verification_url: .*&name=Atlas&.*&createOnly=true$" "${WORK}/app.out" && ! grep -q "^verification_url: .*addons=" "${WORK}/app.out"'
-check "QR was generated from the full link with scopes" 'grep "\"qrcode\"" "${FAKE_CTRL}/calls.log" | grep -q "addons="'
+check "printed link carries name, the one scope request and createOnly" 'grep -q "^verification_url: .*&name=Atlas&.*&addons=[^&]*&createOnly=true$" "${WORK}/app.out"'
+check "QR was generated from the printed link" 'url="$(sed -n "s/^verification_url: //p" "${WORK}/app.out")"; [[ -n "${url}" ]] && grep "\"qrcode\"" "${FAKE_CTRL}/calls.log" | grep -qF "\"${url}\""'
+check "the app output has exactly one link" '[[ "$(grep -c "https://" "${WORK}/app.out")" -eq 1 ]]'
 check "link and QR open the launcher page, not lark-cli's own page" 'grep -q "^verification_url: https://open.feishu.cn/page/launcher?user_code=" "${WORK}/app.out" && grep "\"qrcode\"" "${FAKE_CTRL}/calls.log" | grep -q "/page/launcher?user_code=" && ! grep -q "/page/cli?" "${WORK}/app.out"'
 check "QR file exists" 'test -f "$(sed -n "s/^qr_png: //p" "${WORK}/app.out")"'
 
@@ -62,6 +63,7 @@ echo "== 3. scopes"
 python3 scripts/onboard.py scopes --bot e2e > "${WORK}/scopes.out" 2>&1
 rc=$?
 check "scopes complete and bridge ready" '[[ ${rc} -eq 0 ]] && grep -q "^status: complete" "${WORK}/scopes.out" && grep -q "^bridge_ready: yes" "${WORK}/scopes.out"'
+check "scopes needed no change and print the permissions page" '! grep -q "\"PATCH\"\|\"POST\"" "${FAKE_CTRL}/calls.log" && grep -q "^permissions_page: https://open.feishu.cn/app/cli_fake/auth$" "${WORK}/scopes.out"'
 
 echo "== 4. relay, webhook, start"
 python3 "${HERE}/webhook-server.py" "${WORK}/hook.port" "${WORK}/hook.log" &

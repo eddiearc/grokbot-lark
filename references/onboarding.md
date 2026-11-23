@@ -19,65 +19,80 @@ understands:
 | `name` | `--name` (default: the `--bot` value) | Pre-fills the app name. The operator can still edit it. |
 | `desc` | `--desc` (default: `Grok Bot`) | Pre-fills the description. |
 | `avatar` | each `--avatar` (up to 6) | Offers these images as the app icon. Each must be a public `https` image URL. |
-| `addons` | scopes from `scopes/bot-scopes.txt` plus the event `im.message.receive_v1` | Adds them on top of the page's default template. |
-| `createOnly` | `true` | Hides "use an existing app", so the scan always creates a new app. |
-| `tp` | `lark_cli_template` | Keeps `lark-cli`'s default permission template when the tenant ignores `addons`. |
+| `addons` | the one scope `application:application:patch` | Adds it on top of the page's default template. The page lists it on a second screen as "Modify app info" (修改应用信息), marked sensitive. |
+| `createOnly` | `true` | Hides "use an existing app", so the link always creates a new app. |
+| `tp` | `lark_cli_template` | Names `lark-cli`'s app template, which the page uses when it gets no `addons` or ignores them. |
 
 `addons` is compact JSON, gzipped, base64-encoded with the URL-safe alphabet and no padding:
 
 ```json
-{"scopes": {"tenant": ["im:message", "…"], "user": []},
- "events": {"items": {"tenant": ["im.message.receive_v1"], "user": []}}}
+{"scopes": {"tenant": ["application:application:patch"], "user": []},
+ "events": {"items": {"tenant": [], "user": []}}}
 ```
 
-With `addons` the link is more than a kilobyte of base64. An agent that writes such a link into
-a chat message corrupts it often enough to matter, and a corrupted `addons` is ignored by the
-page without any error. So the full link exists in one place only:
+Why one scope and not the whole list:
 
-| Output | Carries | Sent how |
-| --- | --- | --- |
-| `qr_png` | The full link: name, description, avatar, scopes, event | Attached as an image. A tool generates it from the exact link. |
-| `verification_url` | The same link without `addons` | Pasted as text. It is short. |
+- Every app template the page offers grants the same 35 bot scopes, the message event
+  included. Only 27 of them are in `scopes/bot-scopes.txt`, so a link without `addons` always
+  ends at 27 granted scopes, whatever `tp` says.
+- A link that listed the other scopes would carry about a kilobyte of base64. An agent that
+  writes such a link into a chat message corrupts it often enough to matter, and the page
+  ignores a corrupted `addons` without any error.
+- One scope keeps the link near 300 characters. `qr_png` is that same link as an image, so
+  the operator gets the same app whether they click or scan.
 
-After the operator confirms, the page creates the app, adds the bot capability, the scopes and
-the event, creates a version, and publishes it. `lark-cli` receives the app ID and secret and
-stores them in the bot's store. `onboard.py wait` then locks the store to the bot identity
-(`strict-mode bot`), reads the bot's `open_id`, and writes `~/.lark-bots/<bot>/app.json`.
+After the operator confirms, the page creates the app with the bot capability and the event,
+adds the template's scopes and this one, creates a version, and publishes it. `lark-cli`
+receives the app ID and secret and stores them in the bot's store. `onboard.py wait` then locks
+the store to the bot identity (`strict-mode bot`), reads the bot's `open_id`, and writes
+`~/.lark-bots/<bot>/app.json`.
+
+## How `scopes` adds the permissions
+
+`python3 scripts/onboard.py scopes` runs three calls as the bot:
+
+| Call | Purpose |
+| --- | --- |
+| `GET /open-apis/application/v6/scopes` | Every scope the app has asked for and whether the tenant has granted it. Needs no scope itself. |
+| `PATCH /open-apis/application/v7/applications/<app id>/config` | Adds the scopes from `scopes/bot-scopes.txt` that the app has not asked for. Needs `application:application:patch`. |
+| `POST /open-apis/application/v7/applications/<app id>/publish` | Only when scopes are still not granted after the first two: submits a release of the app. |
+
+With the bot's token the last two calls can change only the bot's own app. A scope that needs
+no review is granted the moment it is added, so a tenant that approves its own apps ends at
+`status: complete` within seconds and never reaches the third call. Where a tenant admin
+reviews releases, the command prints `review: release <version> submitted` and the scopes
+arrive when the admin approves.
+
+The app keeps `application:application:patch` afterwards. Running `scopes` again later, for
+example after an upgrade that lists a new scope, adds it the same way.
 
 ## When the result differs
 
 | What you see | Why | What to do |
 | --- | --- | --- |
-| `scopes` says `partial` | The operator opened the link instead of scanning, so only the page's default template was applied. Or the tenant does not have the "extra config" feature and the page ignored `addons`. Scope names the tenant cannot grant are also dropped silently. | The bridge works with the default template. Attach `apply_qr_png` once, in the final setup message. |
-| `scopes` says `blocked` | The published version lacks the scope or event that `lark-cli event consume` needs, or a tenant admin has not approved the app yet. | Send `apply_qr_png`, then run `scopes --wait 600`. Repeat the wait until it clears. |
-| `scopes` says `unknown` | The app could not read its own scope list, usually because `application:application:self_manage` is missing. | Continue. Attach `apply_qr_png` once at the end. |
-| `wait` says `failed`, reason `expired` | The link was not used in time (about an hour at the time of writing). | Run the command on the `next:` line and send the new code and link. |
-| `wait` says `failed`, reason `denied` | The operator declined on the page. | Ask whether they want to try again before sending a new code. |
-| `qr_png: unavailable (…)` | `lark-cli auth qrcode` failed. | Send `verification_url` alone. The app is created with the default permissions and `scopes` reports what is missing. |
-| The page shows a generated default name instead of the bot's name | The link opened `/page/cli`: an older copy of this skill, or `--page cli`. | `git pull`, then `python3 scripts/onboard.py app --force --name "<name>"` for a new code and link. The operator can also just type the name on the page. |
-| The page asks to confirm where the link came from | `/page/launcher` shows a safety notice for sources it does not list. | The operator confirms; the link came from their own bot. |
-
-The QR code is dense because it carries every scope. `onboard.py` renders it at 1024 px. It
-still decodes when shrunk to a quarter of that, but a phone camera needs it shown large: if a
-thumbnail does not scan, the operator opens the image at full size.
+| `scopes` says `partial` and prints `grant_url` | The app does not hold `application:application:patch`: the tenant does not have the "extra config" feature and the page ignored `addons`, the link was altered on the way, the operator removed the permission, or the app was imported. | Send `grant_url` and `grant_qr_png` in one message, then run `scopes --wait 600`. The page behind the link shows that single permission and one button. |
+| `scopes` prints `review:` | Some scopes take effect only with a release, and a tenant admin has to approve it. | Continue the setup. Tell the operator that the remaining permissions arrive when the admin approves the release. Run `scopes` again afterwards to confirm. |
+| `scopes` prints `apply_error:` | The platform refused the change; the line carries its message. | Continue the setup. Give the operator `permissions_page`; they can import [`scopes/feishu-scopes-import.json`](../scopes/feishu-scopes-import.json) there. |
+| `scopes` says `blocked` | `lark-cli event consume` cannot run: a scope or the event it needs is missing, or a tenant admin has not approved the app yet. | The `blocker:` lines name the cause. With a `grant_url`, send it and wait; otherwise tell the operator what is missing and run `scopes --wait 600`. |
+| `scopes` says `unknown` | The scope status could not be read, for example while the app is not yet installed in the tenant. | Continue, and run `scopes` again later. |
+| `wait` says `failed`, reason `expired` | The link was not used in time (about an hour at the time of writing). | Run the command on the `next:` line and send the new link and code. |
+| `wait` says `failed`, reason `denied` | The operator declined on the page. | Ask whether they want to try again before sending a new link. |
+| `qr_png: unavailable (…)` | `lark-cli auth qrcode` failed. | Send `verification_url` alone. It is the same link. |
+| The page shows a generated default name instead of the bot's name | The link opened `/page/cli`: an older copy of this skill, or `--page cli`. | `git pull`, then `python3 scripts/onboard.py app --force --name "<name>"` for a new link. The operator can also just type the name on the page. |
+| The page asks to confirm where the link came from | `/page/launcher` shows a safety notice (操作安全提示) for sources it does not list. | The operator confirms; the link came from their own bot. |
 
 ## Adding permissions later
 
-`python3 scripts/onboard.py scopes` compares the app's granted bot scopes with
-`scopes/bot-scopes.txt`. For whatever is missing it prints:
-
-- `apply_qr_png`: a QR code of the launcher link (`/page/launcher?clientID=…&addons=…`). One
-  scan; Feishu shows the difference, the operator confirms, and Feishu publishes the new version
-  itself.
-- `permissions_page`: the app's permission page in the developer console
-  (`/app/<app id>/auth`), short enough to paste, for adding scopes by hand. After that the
-  operator must create and publish a new app version.
-
-The launcher link itself is printed (`apply_url`, with the classic `fallback_url`) only when the
-QR image could not be generated. Copy it exactly in that case.
-
 To change what the bot asks for, edit `scopes/bot-scopes.txt` (one scope per line) and keep
-`scopes/feishu-scopes-import.json` identical; a test compares the two.
+`scopes/feishu-scopes-import.json` identical; a test compares the two. Then run
+`python3 scripts/onboard.py scopes`: it adds the new scopes itself. It never removes a scope.
+
+`permissions_page`, printed by every `scopes` run, is the app's permission page in the developer
+console (`/app/<app id>/auth`), for looking at the scopes or changing them by hand.
+
+`python3 scripts/scope_link.py --app-id <app id>` builds a link that lists every scope, for an
+operator who wants to confirm them on a page instead. That link is long: send it as a QR image
+(`lark-cli auth qrcode`), not as text.
 
 ## The operator already has an app
 
@@ -89,15 +104,17 @@ printf '%s' "$LARK_APP_SECRET" | python3 scripts/onboard.py app --app-id cli_xxx
 python3 scripts/onboard.py scopes
 ```
 
-Add `--brand lark` for an international app. An imported app usually needs the bot capability,
-the `im.message.receive_v1` event over a long connection, and most scopes: `scopes` reports
-`blocked`, and its `apply_qr_png` adds the scopes and the event in one scan.
+Add `--brand lark` for an international app. An imported app does not hold
+`application:application:patch`, so `scopes` prints `grant_url`: one confirmation there, and the
+command adds the scopes. It adds scopes only. The bot capability and the
+`im.message.receive_v1` event over a long connection are the operator's to set in the developer
+console; while they are missing, `scopes` reports `blocked` and its `blocker:` lines say which.
 
 ## Feishu or Lark
 
 `--brand feishu` (default) builds links on `open.feishu.cn`; `--brand lark` builds them on
 `open.larksuite.com`. `larksuite` and `international` are accepted as aliases for `lark`. The
-brand that `lark-cli` records after the scan is the one the relay uses from then on.
+brand that `lark-cli` records after the registration is the one the relay uses from then on.
 
 ## Running a step again
 

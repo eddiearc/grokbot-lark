@@ -29,8 +29,9 @@ Start with the health report. It ends with `status: healthy`, or with `status: u
 | A reaction appears but no reply comes; `ERROR` after 10 minutes. | The webhook did not start a run, or the handler failed. | Look for `forwarded` or `webhook_post_failed` in `logs/relay.jsonl`, then at the handler routine's run history. |
 | The reply arrived but the message still got `ERROR`. | The answer was not sent with `im +messages-reply --message-id <id>`, or it sits past the 50th message of a thread. | Reply to the message directly. See "Limits" in `architecture.md`. |
 | Group @mentions are ignored; DMs work. | `LARK_BOT_OPEN_ID` is empty or wrong in `relay.env`. | `python3 scripts/onboard.py relay --start` rewrites it from the app. |
-| The sender has no name (`name_unresolved`). | The contact scopes are missing. | `python3 scripts/onboard.py scopes`, send the operator `apply_qr_png`. Names are retried after five minutes. |
-| `scopes` says `partial` right after setup. | The operator opened the link instead of scanning the code, or the tenant applied only its default permissions. | Send `apply_qr_png`. Scanning it adds the rest and Feishu publishes the change. |
+| The sender has no name (`name_unresolved`). | The contact scopes are missing. | `python3 scripts/onboard.py scopes` adds them. Names are retried after five minutes. |
+| `scopes` says `partial` and prints `grant_url`. | The app cannot add permissions itself: it does not hold `application:application:patch`. | Send the operator `grant_url` and `grant_qr_png` in one message, then run `scopes --wait 600`. One confirmation on that page is enough. |
+| `scopes` prints `review:` or `apply_error:`. | A tenant admin has to approve the release, or the platform refused the change. | See "When the result differs" in `onboarding.md`. |
 | A `lark-cli` call fails with `app_scope_not_applied`. | The app does not have that scope. | Give the operator the `console_url` from the error. |
 | Replies come from the wrong bot. | A `lark-cli` call ran without sourcing this bot's store env file. | Use the command in the payload's `instructions`. |
 | `webhook_post_failed` with `http_401` or `http_403`, or `onboard.py webhook` says `status: rejected`. | The URL and key do not belong together, or the key is outdated. | The operator copies both again from the routine's Webhook section into the two secure cards; then `python3 scripts/onboard.py webhook`. It tests the pair before you rely on it. |
@@ -38,7 +39,7 @@ Start with the health report. It ends with `status: healthy`, or with `status: u
 | `start.sh` says "already running" but `status.sh` says `listener_down`. | The supervisor died and left `relay.py` holding the lock, or a supervisor from the first release is still running without its pid file. | `~/.lark-relay/stop.sh`, then `~/.lark-relay/start.sh`. `stop.sh` finds and ends both. |
 | `consume.stderr.log` says another bus is already connected. | A second relay, or a manual `lark-cli event consume`, uses the same store. | Stop the other one. Each bot needs its own store and relay directory. |
 | `npm install -g @larksuite/cli` fails with a permission error. | The global npm directory is not writable. | `npm install -g --prefix ~/.local @larksuite/cli`. Every script here puts `~/.local/bin` first on `PATH`. |
-| The bot stopped after sending the scan link and did not continue. | The runtime ended the turn when the bot messaged the operator. | Send the bot any message. `onboard.py wait` then returns at once and setup carries on from step 2. |
+| The bot stopped after sending the link and did not continue. | The runtime ended the turn when the bot messaged the operator. | Send the bot any message. `onboard.py wait` then returns at once and setup carries on from step 2. |
 
 ## Useful commands
 
@@ -59,12 +60,18 @@ source ~/.lark-bots/lark-bot/env.sh && lark-cli event consume im.message.receive
 ```bash
 git pull
 python3 scripts/onboard.py relay --start
+python3 scripts/onboard.py scopes
 ```
 
-This replaces the relay code, keeps `webhook.env`, the logs and the state, writes `relay.env`
-from the app, stops the running relay, and starts the new one. It also works on an install of
-the first release, which had no `start.sh`, `stop.sh`, or `relay.env`, and whose supervisor did
-not exit on TERM: `stop.sh` ends it anyway.
+`relay --start` replaces the relay code, keeps `webhook.env`, the logs and the state, writes
+`relay.env` from the app, stops the running relay, and starts the new one. It also works on an
+install of the first release, which had no `start.sh`, `stop.sh`, or `relay.env`, and whose
+supervisor did not exit on TERM: `stop.sh` ends it anyway.
+
+`scopes` adds any scope the app does not have yet. An app created by an earlier version of this
+skill does not hold `application:application:patch`, so the first run prints `grant_url`: send
+it to the operator and run `scopes --wait 600`. After their one confirmation the command adds
+every missing scope.
 
 Afterwards replace the instructions of both routines with the current text
 (`python3 scripts/onboard.py routine handler` and `… routine health-check`). Edit the routines

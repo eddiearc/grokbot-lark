@@ -50,10 +50,10 @@ if args[:2] == ["auth", "qrcode"]:
 if args[:2] == ["api", "GET"]:
     path = args[2]
     if path.endswith("/bot/v3/info"):
-        emit({"ok": True, "data": {"bot": {"open_id": "ou_bot", "app_name": "Atlas"}}})
-    elif "/applications/" in path:
+        emit({"ok": True, "identity": "bot", "data": {"activate_status": 2, "open_id": "ou_bot", "app_name": "Atlas"}})
+    elif path == "/open-apis/application/v6/scopes":
         scopes = [l.strip() for l in Path(os.environ["FAKE_SCOPES"]).read_text().splitlines() if l.strip() and not l.startswith("#")]
-        emit({"ok": True, "data": {"app": {"scopes": [{"scope": s, "token_types": ["tenant"]} for s in scopes]}}})
+        emit({"ok": True, "identity": "bot", "data": {"scopes": [{"grant_status": 1, "scope_name": s, "scope_type": "tenant"} for s in scopes]}})
     else:
         emit({"ok": False, "error": {"type": "api", "subtype": "unknown", "message": "unexpected path"}})
     sys.exit(0)
