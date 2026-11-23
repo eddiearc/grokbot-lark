@@ -1161,6 +1161,71 @@ class NextCommandTests(OnboardCase):
         self.assertEqual(nxt, self.relay_next("", f" --relay-dir {relay_dir}"))
 
 
+class WebhookCheckOnlyTests(OnboardCase):
+    """webhook --check tests what the relay already uses and writes nothing."""
+
+    KEY = "k-existing-9z8y"
+    PATH = "/hook/existing-path-token"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.relay_dir = self.tmp / "relay-home"
+        self.relay_dir.mkdir()
+        self.file = self.relay_dir / "webhook.env"
+
+    def save(self, port: int) -> str:
+        text = f"LARK_BOT_WEBHOOK_URL=http://127.0.0.1:{port}{self.PATH}\nLARK_BOT_WEBHOOK_KEY={self.KEY}\n"
+        self.file.write_text(text)
+        return text
+
+    def check(self, *extra: str, env=None):
+        merged = {"ONBOARD_SKIP_WEBHOOK_TEST": "0", "LARK_BOT_WEBHOOK_KEY": "stale-key-from-environment"}
+        merged.update(env or {})
+        proc = self.run_onboard(["webhook", "--relay-dir", str(self.relay_dir), "--check"] + list(extra), env=merged)
+        for value in (self.KEY, self.PATH, "stale-key-from-environment"):
+            self.assertNotIn(value, proc.stdout)
+            self.assertNotIn(value, proc.stderr)
+        return proc
+
+    def test_accepted_uses_the_file_and_leaves_it_alone(self) -> None:
+        server = WebhookServer(200)
+        self.addCleanup(server.close)
+        before = self.save(server.port)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = kv(proc.stdout)
+        self.assertEqual((out["status"], out["test"]), ("ok", "accepted (HTTP 200)"))
+        self.assertIn("not changed", out["file"])
+        self.assertEqual(self.file.read_text(), before)
+        # The key in the file wins over a different one in the environment.
+        self.assertEqual(server.requests[0]["authorization"], "Bearer " + self.KEY)
+        self.assertEqual(server.requests[0]["body"]["type"], "relay_test")
+
+    def test_rejected(self) -> None:
+        server = WebhookServer(401)
+        self.addCleanup(server.close)
+        before = self.save(server.port)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 4)
+        out = kv(proc.stdout)
+        self.assertEqual((out["status"], out["test"]), ("rejected", "rejected (HTTP 401)"))
+        self.assertIn("webhook --url", out["next"])
+        self.assertEqual(self.file.read_text(), before)
+
+    def test_nothing_configured(self) -> None:
+        proc = self.check(env={"LARK_BOT_WEBHOOK_KEY": ""})
+        self.assertEqual(proc.returncode, 3)
+        out = kv(proc.stdout)
+        self.assertEqual((out["status"], out["url"], out["key"]), ("incomplete", "missing", "missing"))
+        self.assertFalse(self.file.exists())
+
+    def test_check_takes_no_new_values(self) -> None:
+        proc = self.check("--url", "https://hooks.example.com/x")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("status: error", proc.stdout)
+        self.assertFalse(self.file.exists())
+
+
 class HelpTests(unittest.TestCase):
     def test_help_for_every_command(self) -> None:
         for cmd in ([], ["app"], ["wait"], ["scopes"], ["relay"], ["webhook"], ["routine"]):

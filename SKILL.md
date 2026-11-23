@@ -191,6 +191,7 @@ exact reply command for this bot; use it as given.
 | Start / stop | `~/.lark-relay/start.sh`, `~/.lark-relay/stop.sh` |
 | Upgrade | `git pull`, then `python3 scripts/onboard.py relay --start`, then replace both routine instructions with the current text (edit the routines; do not recreate them) |
 | Re-check permissions | `python3 scripts/onboard.py scopes` |
+| Test the webhook | `python3 scripts/onboard.py webhook --check` (changes nothing) |
 | Change the webhook | `python3 scripts/onboard.py webhook --url '<new URL>'` |
 | Routine instructions | `python3 scripts/onboard.py routine handler`, `… routine health-check` |
 | Logs | `~/.lark-relay/logs/relay.jsonl`, `consume.stderr.log`, `supervisor.log` |

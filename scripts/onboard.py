@@ -1071,9 +1071,51 @@ def send_webhook_test(url: str, key: str) -> Tuple[str, str]:
     return "failed", f"failed (HTTP {code})"
 
 
+WEBHOOK_REJECTED_NEXT = (
+    "The URL or key does not match. Ask the operator to copy both again from the "
+    "routine's Webhook section (clicking a field copies it), save the key in the "
+    "secret again, then run: python3 scripts/onboard.py webhook --url '<POST to URL>'"
+)
+WEBHOOK_FAILED_NEXT = (
+    "The webhook did not accept the call. Check that the routine exists and is not "
+    "paused, and that the URL is the routine's \"POST to\" value."
+)
+
+
+def webhook_check(args: argparse.Namespace, relay_dir: Path, path: Path) -> int:
+    """Test the webhook the relay already uses. Writes nothing."""
+    if args.url or args.key_stdin or args.no_test:
+        out("status: error", "error: --check takes no --url, --key-stdin or --no-test")
+        return 2
+    url, key = webhook_values(relay_dir)
+    if not (url and key):
+        out(
+            "status: incomplete",
+            f"url: {'set' if url else 'missing'}",
+            f"key: {'set' if key else 'missing'}",
+            f"file: {path}",
+            "next: Nothing was changed. Save the webhook first: "
+            "python3 scripts/onboard.py webhook --url '<POST to URL>'",
+        )
+        return 3
+    verdict, detail = send_webhook_test(url, key)
+    lines = ["url: set", "key: set", f"test: {detail}", f"file: {path} (not changed)"]
+    if verdict == "ok":
+        out("status: ok", *lines, f"next: {relay_dir / 'status.sh'}")
+        return 0
+    out(
+        "status: rejected",
+        *lines,
+        f"next: {WEBHOOK_REJECTED_NEXT if verdict == 'rejected' else WEBHOOK_FAILED_NEXT}",
+    )
+    return 4
+
+
 def cmd_webhook(args: argparse.Namespace) -> int:
     relay_dir = relay_dir_for(args)
     path = relay_dir / "webhook.env"
+    if args.check:
+        return webhook_check(args, relay_dir, path)
     current = read_env_file(path)
 
     url = (args.url or os.environ.get("LARK_BOT_WEBHOOK_URL") or current.get("LARK_BOT_WEBHOOK_URL") or "").strip()
@@ -1266,6 +1308,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="environment variable that holds the key (default: LARK_BOT_WEBHOOK_KEY); "
                    "give each bot on a shared machine its own name")
     p.add_argument("--no-test", action="store_true", help="do not send the connectivity check")
+    p.add_argument("--check", action="store_true",
+                   help="only test the webhook the relay already uses; change nothing")
     p.set_defaults(func=cmd_webhook)
 
     p = sub.add_parser(
