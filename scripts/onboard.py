@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -489,6 +489,32 @@ def load_app(store: Store) -> dict:
 # app
 
 
+CLI_PAGE = "/page/cli"
+LAUNCHER_PAGE = "/page/launcher"
+CLI_TEMPLATE = "lark_cli_template"
+
+
+def landing_url(url: str, page: str) -> str:
+    """Point lark-cli's verification link at the page that honors our parameters.
+
+    lark-cli links to /page/cli. That page reads only user_code and createOnly:
+    it ignores name, desc, avatar and addons. /page/launcher, the page of the
+    official SDK's registerApp flow, reads all of them and completes the same
+    registration (same user_code, same acknowledge and finish calls). The query
+    string is kept byte for byte; tp keeps lark-cli's app template for the case
+    where the tenant ignores addons.
+    """
+    if page != "launcher":
+        return url
+    parts = urlsplit(url)
+    if parts.path.rstrip("/") != CLI_PAGE:
+        return url
+    query = parts.query
+    if "tp" not in parse_qs(query):
+        query += ("&" if query else "") + "tp=" + CLI_TEMPLATE
+    return urlunsplit((parts.scheme, parts.netloc, LAUNCHER_PAGE, query, parts.fragment))
+
+
 def decorate_url(
     url: str, name: str, desc: str, avatars: Sequence[str], scopes: Sequence[str], with_scopes: bool
 ) -> str:
@@ -579,6 +605,7 @@ def cmd_app(args: argparse.Namespace) -> int:
     scopes = scope_link.load_scopes(SCOPES_FILE)
     # The QR image carries the full link (scopes included); the link printed for pasting is the
     # same one without the long addons parameter, so it never depends on a model copying it.
+    base_url = landing_url(base_url, args.page)
     full_url = decorate_url(base_url, name, args.desc, args.avatar, scopes, not args.no_scopes)
     url = decorate_url(base_url, name, args.desc, args.avatar, scopes, False)
     qr, reason = store.make_qr(full_url, "app-qr.png")
@@ -1254,6 +1281,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--brand", type=brand_arg, default="feishu",
                    help="feishu (China, default) or lark (international; aliases larksuite, international)")
     p.add_argument("--no-scopes", action="store_true", help="do not preset scopes and the message event")
+    p.add_argument("--page", choices=("launcher", "cli"), default="launcher",
+                   help="app-creation page: launcher (default; honors the name, avatar and scopes) "
+                   "or cli (lark-cli's own page, which ignores them)")
     p.add_argument("--force", action="store_true", help="replace an already configured store")
     p.add_argument("--app-id", help="import mode: existing app id; the secret is read from stdin")
     p.set_defaults(func=cmd_app)

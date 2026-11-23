@@ -19,6 +19,8 @@ import scope_link
 EVENT = "im.message.receive_v1"
 REQUIRED = scope_link.load_scopes(scope_link.DEFAULT_SCOPES)
 FAKE_BASE = "https://open.feishu.cn/page/cli?" + FAKE_URL_QUERY
+# onboard.py moves lark-cli's link to the launcher page, which honors name, avatar and addons.
+LAUNCHER_BASE = "https://open.feishu.cn/page/launcher?" + FAKE_URL_QUERY + "&tp=lark_cli_template"
 
 
 class AppTests(OnboardCase):
@@ -65,7 +67,7 @@ class AppTests(OnboardCase):
     def test_printed_url_is_short_and_has_no_scopes(self) -> None:
         out = kv(self.run_onboard(["app", "--bot", "t1"]).stdout)
         url = out["verification_url"]
-        self.assertTrue(url.startswith(FAKE_BASE + "&"), url)
+        self.assertTrue(url.startswith(LAUNCHER_BASE + "&"), url)
         self.assertLess(len(url), 400)
         self.assertNotIn("addons=", url)
         query = parse_qs(urlparse(url).query)
@@ -81,7 +83,7 @@ class AppTests(OnboardCase):
         qr_calls = self.calls_matching("auth", "qrcode")
         self.assertEqual(len(qr_calls), 1)
         full = qr_calls[0]["argv"][2]
-        self.assertTrue(full.startswith(FAKE_BASE + "&"), full)
+        self.assertTrue(full.startswith(LAUNCHER_BASE + "&"), full)
         self.assertTrue(full.endswith("&createOnly=true"), full)
         self.assertNotEqual(full, short)
         query = parse_qs(urlparse(full).query)
@@ -211,7 +213,7 @@ class AppTests(OnboardCase):
     def test_brand_alias_maps_to_lark(self) -> None:
         proc = self.run_onboard(["app", "--bot", "t1", "--brand", "international"])
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertTrue(kv(proc.stdout)["verification_url"].startswith("https://open.larksuite.com/page/cli?"))
+        self.assertTrue(kv(proc.stdout)["verification_url"].startswith("https://open.larksuite.com/page/launcher?"))
         self.assertEqual(self.calls_matching("config", "init", "--new")[0]["argv"][-2:], ["--brand", "lark"])
 
     def test_bad_avatar_rejected(self) -> None:
@@ -260,6 +262,42 @@ class AppTests(OnboardCase):
         self.assertEqual(kv(proc.stdout)["status"], "waiting_for_scan")
         self.assertEqual(len(self.calls_matching("config", "init", "--new")), 1)
         self.assertFalse((self.store("t1") / "app.json").exists())
+
+
+class LandingPageTests(OnboardCase):
+    """The link must open /page/launcher: /page/cli ignores name, avatar and addons."""
+
+    def test_default_is_the_launcher_page(self) -> None:
+        proc = self.run_onboard(["app", "--bot", "t1", "--name", "Kala"])
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        url = kv(proc.stdout)["verification_url"]
+        self.assertTrue(url.startswith("https://open.feishu.cn/page/launcher?" + FAKE_URL_QUERY + "&"), url)
+        self.assertNotIn("/page/cli", url)
+        self.assertIn("&tp=lark_cli_template&", url)
+        self.assertIn("&name=Kala&", url)
+        qr_call = self.calls_matching("auth", "qrcode")[-1]["argv"][2]
+        self.assertTrue(qr_call.startswith(LAUNCHER_BASE + "&"), qr_call)
+
+    def test_page_cli_keeps_the_link_lark_cli_printed(self) -> None:
+        proc = self.run_onboard(["app", "--bot", "t1", "--name", "Kala", "--page", "cli"])
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        url = kv(proc.stdout)["verification_url"]
+        self.assertTrue(url.startswith(FAKE_BASE + "&"), url)
+        self.assertNotIn("tp=", url)
+
+    def test_landing_url_keeps_the_query_and_other_pages(self) -> None:
+        sys.path.insert(0, str(support.SCRIPTS_DIR))
+        import onboard  # noqa: E402
+
+        lark = "https://open.larksuite.com/page/cli?user_code=AB-CD&from=cli&tp=custom"
+        self.assertEqual(
+            onboard.landing_url(lark, "launcher"),
+            "https://open.larksuite.com/page/launcher?user_code=AB-CD&from=cli&tp=custom",
+        )
+        already = "https://open.feishu.cn/page/launcher?user_code=AB-CD"
+        self.assertEqual(onboard.landing_url(already, "launcher"), already)
+        other = "https://open.feishu.cn/page/something-new?user_code=AB-CD"
+        self.assertEqual(onboard.landing_url(other, "launcher"), other)
 
 
 class WaitTests(OnboardCase):

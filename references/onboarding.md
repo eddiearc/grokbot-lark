@@ -5,10 +5,14 @@ when a step does not go the usual way.
 
 ## What the operator gets
 
-`scripts/onboard.py app` starts `lark-cli config init --new` in this bot's isolated store, takes
-the verification link it prints, and appends parameters that the Feishu/Lark app-creation page
-understands. These are the parameters of the official SDK's `registerApp` flow
-(`larksuite/node-sdk`, `scene/registration`); the `lark-cli` link opens the same page.
+`scripts/onboard.py app` starts `lark-cli config init --new` in this bot's isolated store and
+takes the verification link it prints. That link opens `/page/cli`, a page that reads only the
+registration code: it ignores a name, an avatar, and permissions. So `onboard.py` moves the
+link to `/page/launcher`, the page the platform itself names for this registration and the one
+the official SDK's `registerApp` flow uses (`larksuite/node-sdk`, `scene/registration`). The
+registration code and everything else in the link stay as `lark-cli` printed them, and
+`lark-cli` receives the result exactly as before. Then it appends the parameters that page
+understands:
 
 | Parameter | Value | Effect on the page |
 | --- | --- | --- |
@@ -17,6 +21,7 @@ understands. These are the parameters of the official SDK's `registerApp` flow
 | `avatar` | each `--avatar` (up to 6) | Offers these images as the app icon. Each must be a public `https` image URL. |
 | `addons` | scopes from `scopes/bot-scopes.txt` plus the event `im.message.receive_v1` | Adds them on top of the page's default template. |
 | `createOnly` | `true` | Hides "use an existing app", so the scan always creates a new app. |
+| `tp` | `lark_cli_template` | Keeps `lark-cli`'s default permission template when the tenant ignores `addons`. |
 
 `addons` is compact JSON, gzipped, base64-encoded with the URL-safe alphabet and no padding:
 
@@ -49,6 +54,8 @@ stores them in the bot's store. `onboard.py wait` then locks the store to the bo
 | `wait` says `failed`, reason `expired` | The link was not used in time (about an hour at the time of writing). | Run the command on the `next:` line and send the new code and link. |
 | `wait` says `failed`, reason `denied` | The operator declined on the page. | Ask whether they want to try again before sending a new code. |
 | `qr_png: unavailable (…)` | `lark-cli auth qrcode` failed. | Send `verification_url` alone. The app is created with the default permissions and `scopes` reports what is missing. |
+| The page shows a generated default name instead of the bot's name | The link opened `/page/cli`: an older copy of this skill, or `--page cli`. | `git pull`, then `python3 scripts/onboard.py app --force --name "<name>"` for a new code and link. The operator can also just type the name on the page. |
+| The page asks to confirm where the link came from | `/page/launcher` shows a safety notice for sources it does not list. | The operator confirms; the link came from their own bot. |
 
 The QR code is dense because it carries every scope. `onboard.py` renders it at 1024 px. It
 still decodes when shrunk to a quarter of that, but a phone camera needs it shown large: if a

@@ -49,6 +49,7 @@ rc=$?
 check "app exits 0 and waits for a scan" '[[ ${rc} -eq 0 ]] && grep -q "^status: waiting_for_scan" "${WORK}/app.out"'
 check "printed link carries name and createOnly but no scopes" 'grep -q "^verification_url: .*&name=Atlas&.*&createOnly=true$" "${WORK}/app.out" && ! grep -q "^verification_url: .*addons=" "${WORK}/app.out"'
 check "QR was generated from the full link with scopes" 'grep "\"qrcode\"" "${FAKE_CTRL}/calls.log" | grep -q "addons="'
+check "link and QR open the launcher page, not lark-cli's own page" 'grep -q "^verification_url: https://open.feishu.cn/page/launcher?user_code=" "${WORK}/app.out" && grep "\"qrcode\"" "${FAKE_CTRL}/calls.log" | grep -q "/page/launcher?user_code=" && ! grep -q "/page/cli?" "${WORK}/app.out"'
 check "QR file exists" 'test -f "$(sed -n "s/^qr_png: //p" "${WORK}/app.out")"'
 
 echo "== 2. wait: returns by itself when the operator finishes"
