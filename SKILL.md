@@ -64,6 +64,10 @@ python3 scripts/onboard.py wait
 | 2 | `waiting_for_scan` | Run `wait` again. Do not message the operator again. |
 | 1 | `failed` | The link expired or was declined. Follow `next:` for a new link. |
 
+If your runtime ends your turn as soon as you message the operator, nothing is lost: the
+registration keeps running in the background. Run `wait` first thing in your next turn; it
+returns at once when the operator has already finished.
+
 That one scan creates the app under your name with the bot capability and the message event,
 requests every scope in `scopes/bot-scopes.txt`, and publishes the app. The operator does no
 console work. Step 2 confirms what was actually granted.
@@ -96,8 +100,8 @@ Create both yourself. Do not ask the operator to write them.
 
 | Routine | Trigger | Instruction |
 | --- | --- | --- |
-| `Lark message handler` | Webhook | The text of `templates/handler-routine-prompt.md` |
-| `Lark relay health check` | Every 30 minutes | The text of `templates/health-check-routine-prompt.md` |
+| `Lark message handler` | Webhook | `templates/handler-routine-prompt.md`, everything below its `---` line |
+| `Lark relay health check` | Every 30 minutes | `templates/health-check-routine-prompt.md`, everything below its `---` line |
 
 ### 5. Connect the webhook
 

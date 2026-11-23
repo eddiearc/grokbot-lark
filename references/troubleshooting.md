@@ -35,6 +35,8 @@ Start with the health report. It ends with `status: healthy`, or with `status: u
 | `webhook_post_failed` during a burst of messages. | The handler routine reached its limit of 200 runs an hour. | Nothing to do: messages stay in the spool and are delivered later. |
 | `start.sh` says "already running" but `status.sh` says `listener_down`. | The supervisor died and left `relay.py` holding the lock. | `pkill -f "$HOME/.lark-relay/relay.py"`, then `~/.lark-relay/start.sh`. |
 | `consume.stderr.log` says another bus is already connected. | A second relay, or a manual `lark-cli event consume`, uses the same store. | Stop the other one. Each bot needs its own store and relay directory. |
+| `npm install -g @larksuite/cli` fails with a permission error. | The global npm directory is not writable. | `npm install -g --prefix ~/.local @larksuite/cli`. Every script here puts `~/.local/bin` first on `PATH`. |
+| The bot stopped after sending the scan link and did not continue. | The runtime ended the turn when the bot messaged the operator. | Send the bot any message. `onboard.py wait` then returns at once and setup carries on from step 2. |
 
 ## Useful commands
 
