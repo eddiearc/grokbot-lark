@@ -63,7 +63,9 @@ standard library.
 
 - **Permissions.** The scan requests every scope in
   [`scopes/bot-scopes.txt`](scopes/bot-scopes.txt): chat, contacts, documents, Base, sheets, wiki,
-  and drive. Remove lines you do not want before setup.
+  and drive. Four are left out on purpose and listed at the end of that file: urgent phone calls
+  and SMS, document ownership transfer, and document deletion. Edit the file before setup to ask
+  for more or less.
 - **Who can use the bot.** Anyone who can DM the bot or @mention it can give it work, and the bot
   treats every sender as an ordinary user. Set the app's availability range in the developer
   console to limit who that is.

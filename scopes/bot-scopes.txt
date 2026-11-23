@@ -25,8 +25,6 @@ im:message.pins:write_only
 im:message.reactions:read
 im:message.reactions:write_only
 im:message.urgent
-im:message.urgent:phone
-im:message.urgent:sms
 im:message:readonly
 im:message:recall
 im:message:send_as_bot
@@ -55,7 +53,6 @@ docs:document:import
 docs:permission.member:create
 docs:permission.member:delete
 docs:permission.member:retrieve
-docs:permission.member:transfer
 docs:permission.setting:read
 docs:permission.setting:write_only
 drive:drive.metadata:readonly
@@ -63,7 +60,6 @@ drive:file:download
 drive:file:upload
 drive:file:view_record:readonly
 search:docs:read
-space:document:delete
 space:document:move
 space:document:retrieve
 space:document:shortcut
@@ -139,3 +135,11 @@ im:message.group_at_msg.include_bot:readonly
 cardkit:card:read
 cardkit:card:write
 docx:document
+#
+# Left out on purpose: they cost money, reach people outside Feishu/Lark, or cannot be
+# undone. To grant one, uncomment it here, add it to feishu-scopes-import.json, and run
+# `python3 scripts/onboard.py scopes` for the link.
+# im:message.urgent:phone
+# im:message.urgent:sms
+# docs:permission.member:transfer
+# space:document:delete
