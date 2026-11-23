@@ -18,6 +18,7 @@ Outbound   you ── source <store env> && lark-cli … --as bot ──▶ Feis
 
 - **Do not stop to ask.** Setup needs the operator twice: the scan in step 1 and the webhook in
   step 5. Never end your turn to wait for "done": `onboard.py wait` blocks until they finish.
+  The one reply you do need is the webhook URL in step 5.
 - **Follow the `next:` line.** Every `scripts/onboard.py` command prints `key: value` lines and
   ends with `next:`, the exact step to take.
 - **Bot identity only.** Never run `lark-cli auth login`, change `strict-mode`, switch profiles,
@@ -133,7 +134,8 @@ a secret card that appears before the explanation leaves the operator guessing w
 
 2. **Then request the card**: a secure secret named `LARK_BOT_WEBHOOK_KEY`. Never ask for the
    key in chat.
-3. **When you have the URL and the card is saved**, run:
+3. **When you have the URL and the card is saved**, run the command below. If the operator
+   has not sent the URL yet, end your turn and run it when they do.
 
    ```bash
    python3 scripts/onboard.py webhook --url '<POST to URL>'
@@ -154,8 +156,9 @@ The routine's instruction tells you to end that run without doing anything.
 ```
 
 `status: healthy` means the bridge is live. Tell the operator in one message: the bot's name in
-Feishu/Lark, "send me a DM to try it", and (only if step 2 was not `complete`) the
-`apply_qr_png` image with one line saying that scanning it adds the remaining permissions.
+Feishu/Lark and "send me a DM to try it". Only if step 2 was not `complete`, add the
+`apply_qr_png` image with one line saying that scanning it adds the remaining permissions;
+otherwise do not mention permissions at all.
 
 ## When a message wakes you
 
