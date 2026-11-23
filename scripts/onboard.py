@@ -513,7 +513,8 @@ def landing_url(url: str, page: str) -> str:
 
 
 def decorate_url(
-    url: str, name: str, desc: str, avatars: Sequence[str], with_config_scope: bool
+    url: str, name: str, desc: str, avatars: Sequence[str], with_config_scope: bool,
+    all_scopes: Sequence[str] = (),
 ) -> str:
     """Add the app name, description, avatars and, in addons, the one scope `scopes` builds on.
 
@@ -527,8 +528,11 @@ def decorate_url(
     for avatar in avatars:
         out_url += "&avatar=" + quote(avatar, safe="")
     if with_config_scope:
+        # Lark (international) has neither APP_CONFIG_SCOPE nor the API that adds scopes, so
+        # there the link has to carry the whole list, long as that makes it.
         addons = scope_link.encode_addons(
-            scope_link.build_addons((scope_link.APP_CONFIG_SCOPE,), ())
+            scope_link.build_addons(all_scopes, (EVENT,)) if all_scopes
+            else scope_link.build_addons((scope_link.APP_CONFIG_SCOPE,), ())
         )
         out_url += "&addons=" + quote(addons, safe="")
     return out_url + "&createOnly=true"
@@ -611,7 +615,8 @@ def cmd_app(args: argparse.Namespace) -> int:
     # One link for both the QR image and the text to paste, so the operator gets the same app
     # whichever they use.
     url = decorate_url(
-        landing_url(base_url, args.page), name, args.desc, args.avatar, not args.no_scopes
+        landing_url(base_url, args.page), name, args.desc, args.avatar, not args.no_scopes,
+        scope_link.load_scopes(SCOPES_FILE) if args.brand == "lark" else (),
     )
     qr, reason = store.make_qr(url, "app-qr.png")
     state = {
@@ -960,7 +965,8 @@ def cmd_scopes(args: argparse.Namespace) -> int:
         if full_list and qr:
             send = (
                 "attach grant_qr_png (scanning it with Lark opens one page that lists the "
-                "missing permissions) and give permissions_page as the manual alternative"
+                "missing permissions), and as the other way give permissions_page and attach "
+                "scopes/feishu-scopes-import.json for its batch import"
             )
         lead = "The relay cannot receive messages yet. " if status == "blocked" else ""
         nxt = (
