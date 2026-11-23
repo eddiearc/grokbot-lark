@@ -41,6 +41,21 @@ CONSUME_CMD = [
     "bot",
 ]
 SEEN_MAX = 50000
+# The websocket lives in lark-cli's event bus daemon, not in the consumer. After a
+# ping timeout the SDK can report a reconnect and still deliver nothing, and a bus
+# that is merely stopped and started within 30 s is reused as it is. So the relay
+# stops the bus before each run, and ends the run (the supervisor starts the next)
+# when the bus log reports a connection problem or stays silent too long.
+BUS_TROUBLE = re.compile(r"ping timeout|websocket: close|reconnect", re.IGNORECASE)
+BUS_CHECK_SEC = 5.0
+RECYCLE_EXIT = 75
+
+
+def _idle_recycle_sec() -> float:
+    try:
+        return max(0.0, float(os.environ.get("LARK_RELAY_IDLE_RECYCLE_SEC", "3600")))
+    except ValueError:
+        return 3600.0
 POST_TIMEOUT = 20
 POST_RETRIES = 3
 FLUSH_INTERVAL_SEC = 2.0
@@ -465,6 +480,67 @@ def stdout_reader(pipe) -> None:
             pass
 
 
+def bus_log_path() -> Path | None:
+    cfg = os.environ.get("LARKSUITE_CLI_CONFIG_DIR", "").strip()
+    root = (Path(cfg) if cfg else Path.home() / ".lark-cli") / "events"
+    app_id = os.environ.get("LARK_BOT_APP_ID", "").strip()
+    if app_id:
+        return root / app_id / "bus.log"
+    found = sorted(root.glob("*/bus.log"))
+    return found[0] if len(found) == 1 else None
+
+
+def stop_bus() -> None:
+    """Stop this bot's event bus so the next consumer opens a new connection."""
+    try:
+        r = subprocess.run(
+            ["lark-cli", "event", "stop", "--force", "--json"],
+            capture_output=True,
+            timeout=30,
+        )
+        log("bus_stop", returncode=r.returncode)
+    except Exception as e:
+        log("bus_stop_failed", error=type(e).__name__)
+
+
+class BusWatch:
+    """Reads what the bus log gained since the last check."""
+
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self.offset = self._size()
+        self.last_activity = time.time()
+
+    def _size(self) -> int:
+        try:
+            return self.path.stat().st_size if self.path else 0
+        except OSError:
+            return 0
+
+    def check(self) -> str | None:
+        """Return why the connection must be rebuilt, or None."""
+        now = time.time()
+        size = self._size()
+        if size < self.offset:
+            self.offset = 0
+        if self.path and size > self.offset:
+            try:
+                with self.path.open("rb") as f:
+                    f.seek(self.offset)
+                    text = f.read(size - self.offset).decode("utf-8", errors="replace")
+            except OSError:
+                text = ""
+            self.offset = size
+            self.last_activity = now
+            for line in text.splitlines():
+                if BUS_TROUBLE.search(line):
+                    return "bus_connection_trouble"
+        idle = _idle_recycle_sec()
+        if idle and now - self.last_activity >= idle:
+            return "idle"
+        return None
+
+
 def handle_signal(signum, _frame) -> None:
     log("signal", signum=signum)
     stop_event.set()
@@ -518,6 +594,7 @@ def main() -> int:
     except Exception as e:
         log("startup_reconcile_failed", error=type(e).__name__)
 
+    stop_bus()
     env = os.environ.copy()
     ready = threading.Event()
     proc = subprocess.Popen(
@@ -555,6 +632,9 @@ def main() -> int:
 
     last_flush = time.time()
     last_poll = 0.0
+    last_bus_check = time.time()
+    watch = BusWatch(bus_log_path())
+    recycle = None
     while not stop_event.is_set():
         rc = proc.poll()
         if rc is not None:
@@ -575,6 +655,12 @@ def main() -> int:
             except Exception as e:
                 log("poll_failed", error=type(e).__name__)
             last_poll = now
+        if now - last_bus_check >= BUS_CHECK_SEC:
+            last_bus_check = now
+            recycle = watch.check()
+            if recycle:
+                log("connection_recycle", reason=recycle)
+                break
         stop_event.wait(timeout=0.5)
 
     handle_signal(signal.SIGTERM, None)
@@ -586,6 +672,9 @@ def main() -> int:
     t_out.join(timeout=5)
     t_err.join(timeout=5)
     log("relay_stop", returncode=rc)
+    if recycle:
+        stop_bus()
+        return RECYCLE_EXIT
     return 0
 
 

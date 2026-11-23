@@ -224,5 +224,38 @@ class RunCliRetryTests(unittest.TestCase):
         self.assertEqual(calls, 1)
 
 
+
+class BusWatchTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "bus.log"
+        self.path.write_text("old: websocket: close 3003: ping timeout\n")
+
+    def add(self, line):
+        with self.path.open("a") as f:
+            f.write(line + "\n")
+
+    def test_lines_from_before_the_run_do_not_count(self):
+        self.assertIsNone(relay.BusWatch(self.path).check())
+
+    def test_events_keep_the_connection(self):
+        watch = relay.BusWatch(self.path)
+        self.add("Event received: type=im.message.receive_v1 id=1")
+        self.assertIsNone(watch.check())
+
+    def test_ping_timeout_asks_for_a_new_connection(self):
+        watch = relay.BusWatch(self.path)
+        self.add("[SDK] websocket: close 3003: ping timeout")
+        self.assertEqual(watch.check(), "bus_connection_trouble")
+
+    def test_silence_asks_for_a_new_connection(self):
+        watch = relay.BusWatch(self.path)
+        watch.last_activity -= 4000
+        self.assertEqual(watch.check(), "idle")
+        with mock.patch.dict(os.environ, {"LARK_RELAY_IDLE_RECYCLE_SEC": "0"}):
+            self.assertIsNone(watch.check())
+
+
 if __name__ == "__main__":
     unittest.main()
