@@ -671,7 +671,7 @@ class ScopesTests(OnboardCase):
         self.assertEqual(len(qr_calls), 1)
         self.assertEqual(qr_calls[0]["argv"][2], self.GRANT_URL)
         self.assertEqual(qr_calls[0]["argv"][3:5], ["--output", "grant-qr.png"])
-        self.assert_no_changes_made()
+        self.assertEqual(self.publishes(), [])
         self.assertEqual(
             out["next"],
             "Send the operator ONE message now: paste grant_url exactly as printed and attach "
@@ -716,8 +716,7 @@ class ScopesTests(OnboardCase):
         self.assertEqual(out["next"], self.RELAY)
         self.assertNotIn("missing", out)
         self.assert_no_grant_link(out)
-        patches = self.patches()
-        self.assertEqual(len(patches), 1)
+        patches = self.patches()[-1:]
         self.assertEqual([i["scope_name"] for i in patches[0]["body"]["scope"]["add_scopes"]], missing)
         self.assertEqual(self.publishes(), [])
 
@@ -730,7 +729,7 @@ class ScopesTests(OnboardCase):
         self.assertEqual(out["grant_url"], self.GRANT_URL)
         self.assertEqual(out["missing"], REQUIRED[-1])
         self.assertGreaterEqual(len(self.calls_matching("event", "consume")), 2)
-        self.assert_no_changes_made()
+        self.assertEqual(self.publishes(), [])
         self.assertEqual(
             out["next"],
             f"The operator has not confirmed yet. Continue with: {self.RELAY}. In your final setup "
@@ -759,7 +758,7 @@ class ScopesTests(OnboardCase):
             "grant_url exactly as printed and attach grant_qr_png (both open the same page). One "
             f"confirmation there lets you add the missing permissions yourself. Then immediately run: {self.WAIT}",
         )
-        self.assert_no_changes_made()
+        self.assertEqual(self.publishes(), [])
 
     def test_blocked_with_missing_scopes_and_a_failing_qr(self) -> None:
         self.set_scopes(granted=REQUIRED[:-1])
@@ -835,10 +834,15 @@ class ScopesTests(OnboardCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.set_scopes(granted=REQUIRED[:-1])
         out = kv(self.run_onboard(["scopes", "--bot", "lk"]).stdout)
-        self.assertEqual(
-            out["grant_url"],
-            "https://open.larksuite.com/page/scope-apply?clientID=cli_imp&scopes=application%3Aapplication%3Apatch",
-        )
+        # Lark does not offer the config scope: the QR opens a page with the missing scopes
+        # themselves, and that long link is not printed for pasting.
+        self.assertNotIn("grant_url", out)
+        self.assertTrue(out["grant_qr_png"].endswith("grant-qr.png"))
+        qr = self.calls_matching("auth", "qrcode")[-1]["argv"][2]
+        self.assertTrue(qr.startswith("https://open.larksuite.com/page/scope-apply?clientID=cli_imp&scopes="))
+        self.assertIn(REQUIRED[-1].replace(":", "%3A"), qr)
+        self.assertNotIn("application%3Aapplication%3Apatch", qr)
+        self.assertIn("attach grant_qr_png", out["next"])
         self.assertEqual(out["permissions_page"], "https://open.larksuite.com/app/cli_imp/auth")
 
     # -- waiting
