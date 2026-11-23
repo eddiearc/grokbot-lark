@@ -21,8 +21,8 @@ What happens next:
    sends one more code for the rest.
 2. The bot installs a small relay on its computer and creates two routines for itself.
 3. The bot asks for the webhook URL and key of one of those routines. A Grok Bot cannot read
-   them itself, so you copy them from the routine's **Webhook** section: the URL into chat, the
-   key into the secure card the bot shows you.
+   them itself, so you copy them from the routine's **Webhook** section into the two secure
+   cards the bot shows you. Nothing is pasted into the chat.
 4. Send the bot a DM in Feishu/Lark.
 
 The bot waits for each of your steps on its own. You never have to tell it that you are done.

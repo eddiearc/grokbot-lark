@@ -7,7 +7,7 @@ description: Connect this Grok Bot to Feishu (China) or Lark (international) so 
 
 You are the Grok Bot that owns this bridge. You install it, you keep it running, and you answer
 the messages it forwards. The human is the **operator**: during setup they scan one QR code and
-hand you one webhook URL and key. Everything else is yours to do.
+paste one webhook URL and key into two secure cards. Everything else is yours to do.
 
 ```
 Inbound    Feishu/Lark ──long connection──▶ relay (lark-cli event consume) ──webhook──▶ you
@@ -16,9 +16,9 @@ Outbound   you ── source <store env> && lark-cli … --as bot ──▶ Feis
 
 ## Rules that always apply
 
-- **Do not stop to ask.** Setup needs the operator twice: the scan in step 1 and the webhook in
-  step 5. Never end your turn to wait for "done": `onboard.py wait` blocks until they finish.
-  The one reply you do need is the webhook URL in step 5.
+- **Do not stop to ask.** Setup needs the operator twice: the scan in step 1 and the two secure
+  cards in step 5. Never end your turn to wait for "done": `onboard.py wait` blocks until they
+  finish, and a card returns when it is saved. Nothing has to be typed into the chat.
 - **Follow the `next:` line.** Every `scripts/onboard.py` command prints `key: value` lines and
   ends with `next:`, the exact step to take.
 - **Bot identity only.** Never run `lark-cli auth login`, change `strict-mode`, switch profiles,
@@ -123,28 +123,30 @@ instruction text and nothing else (redirect it to a file if your routine tool ta
 
 ### 5. Connect the webhook
 
-You cannot read your own webhook URL or key; only the operator can see them. The order matters:
-a secret card that appears before the explanation leaves the operator guessing what to paste.
+You cannot read your own webhook URL or key; only the operator can see them. Both go through
+secure cards, so the operator never pastes anything into the chat. The order matters: a card
+that appears before the explanation leaves the operator guessing what to paste.
 
 1. **First, message the operator** where both values are:
 
    > Open the **Lark message handler** routine on desktop. Its **Webhook** section shows
-   > **POST to** and **key**; clicking a field copies it. Paste the **POST to** URL here, and
-   > put the **key** in the secure card I am about to show you.
+   > **POST to** and **key**; clicking a field copies it. I will show you two cards: paste
+   > **POST to** into the first and **key** into the second.
 
-2. **Then request the card**: a secure secret named `LARK_BOT_WEBHOOK_KEY`. Never ask for the
-   key in chat.
-3. **When you have the URL and the card is saved**, run the command below. If the operator
-   has not sent the URL yet, end your turn and run it when they do.
+2. **Then request two secure secrets**, in this order: `LARK_BOT_WEBHOOK_URL`, then
+   `LARK_BOT_WEBHOOK_KEY`. Never ask for either value in chat.
+3. **When both cards are saved**, run:
 
    ```bash
-   python3 scripts/onboard.py webhook --url '<POST to URL>'
+   python3 scripts/onboard.py webhook
    ```
 
-The command saves both and sends one test call to the webhook. `status: saved` with
-`test: accepted` means the URL and key are right; the relay picks them up within seconds, with
-no restart. `status: rejected` means they do not match, and `key: missing` means your shell
-cannot see the secret: follow `next:` in both cases.
+The command reads both values, saves them, and sends one test call to the webhook.
+`status: saved` with `test: accepted` means they are right; the relay picks them up within
+seconds, with no restart. It does not matter if the operator swapped the two cards or pasted
+both values into one: the command sorts them out. `status: rejected` means the URL and key do
+not belong together, and `status: incomplete` means a value did not reach your shell: follow
+`next:` in both cases.
 
 The test call starts one run of your handler routine with a body whose `type` is `relay_test`.
 The routine's instruction tells you to end that run without doing anything.
@@ -192,7 +194,7 @@ exact reply command for this bot; use it as given.
 | Upgrade | `git pull`, then `python3 scripts/onboard.py relay --start`, then replace both routine instructions with the current text (edit the routines; do not recreate them) |
 | Re-check permissions | `python3 scripts/onboard.py scopes` |
 | Test the webhook | `python3 scripts/onboard.py webhook --check` (changes nothing) |
-| Change the webhook | `python3 scripts/onboard.py webhook --url '<new URL>'` |
+| Change the webhook | Ask for the two secure cards again, then `python3 scripts/onboard.py webhook` |
 | Routine instructions | `python3 scripts/onboard.py routine handler`, `… routine health-check` |
 | Logs | `~/.lark-relay/logs/relay.jsonl`, `consume.stderr.log`, `supervisor.log` |
 

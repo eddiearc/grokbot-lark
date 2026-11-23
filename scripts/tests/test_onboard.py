@@ -675,8 +675,8 @@ class RelayTests(OnboardCase):
         self.assertEqual(out["bot_env"], str(self.store("t1") / "env.sh"))
         self.assertEqual(out["bot_open_id"], "ou_fakebot")
         self.assertEqual(out["webhook"], "not configured")
-        self.assertIn(f"webhook --bot t1 --relay-dir {self.relay_dir} --url", out["next"])
-        self.assertIn("<POST to URL>", out["next"])
+        self.assertIn(f"run: python3 scripts/onboard.py webhook --bot t1 --relay-dir {self.relay_dir}.", out["next"])
+        self.assertIn("LARK_BOT_WEBHOOK_URL and then LARK_BOT_WEBHOOK_KEY", out["next"])
         self.assertEqual(self.mode(self.relay_dir), 0o700)
         for name, mode in [("relay.py", 0o600), ("helper.py", 0o600), ("start.sh", 0o700),
                            ("stop.sh", 0o700), ("status.sh", 0o700), ("load-env.sh", 0o700)]:
@@ -962,6 +962,51 @@ class WebhookTests(OnboardCase):
             self.assertFalse(self.file.exists())
             self.assert_no_leak(proc, self.KEY)
 
+    def test_both_values_from_secret_cards(self) -> None:
+        proc = self.webhook(env={"LARK_BOT_WEBHOOK_URL": self.URL, "LARK_BOT_WEBHOOK_KEY": self.KEY})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(kv(proc.stdout)["status"], "saved")
+        self.assertEqual(support_values(self.file), (self.URL, self.KEY))
+        self.assert_no_leak(proc, self.KEY, self.URL)
+
+    def test_values_pasted_into_the_wrong_cards_are_sorted_out(self) -> None:
+        cases = [
+            # swapped
+            {"LARK_BOT_WEBHOOK_URL": self.KEY, "LARK_BOT_WEBHOOK_KEY": self.URL},
+            # both in the key card, either order
+            {"LARK_BOT_WEBHOOK_KEY": self.URL + " " + self.KEY},
+            {"LARK_BOT_WEBHOOK_KEY": self.KEY + "\n" + self.URL},
+            # both in the URL card, key copied as the whole header
+            {"LARK_BOT_WEBHOOK_URL": self.URL + " Authorization: Bearer " + self.KEY},
+            # header in its own card
+            {"LARK_BOT_WEBHOOK_URL": self.URL, "LARK_BOT_WEBHOOK_KEY": "Authorization: Bearer " + self.KEY},
+        ]
+        for env in cases:
+            if self.file.exists():
+                self.file.unlink()
+            proc = self.webhook(env=env)
+            self.assertEqual(proc.returncode, 0, str(env) + proc.stdout + proc.stderr)
+            self.assertEqual(support_values(self.file), (self.URL, self.KEY), str(env))
+            self.assert_no_leak(proc, self.KEY, self.URL)
+
+    def test_other_variable_names_for_a_second_bot(self) -> None:
+        env = {
+            "LARK_BOT_WEBHOOK_URL": "https://hooks.example.com/first-bot",
+            "LARK_BOT_WEBHOOK_KEY": "key-of-the-first-bot",
+            "SALES_WEBHOOK_URL": self.URL,
+            "SALES_WEBHOOK_KEY": self.KEY,
+        }
+        proc = self.webhook("--url-env", "SALES_WEBHOOK_URL", "--key-env", "SALES_WEBHOOK_KEY", env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(support_values(self.file), (self.URL, self.KEY))
+
+    def test_missing_values_name_the_cards_to_ask_for(self) -> None:
+        proc = self.webhook(env={"LARK_BOT_WEBHOOK_KEY": ""})
+        self.assertEqual(proc.returncode, 3)
+        nxt = kv(proc.stdout)["next"]
+        self.assertIn("LARK_BOT_WEBHOOK_URL", nxt)
+        self.assertIn("LARK_BOT_WEBHOOK_KEY", nxt)
+
     def test_key_is_never_accepted_on_argv(self) -> None:
         proc = self.webhook("--url", self.URL, "--key", self.KEY)
         self.assertEqual(proc.returncode, 2)
@@ -1198,7 +1243,7 @@ class NextCommandTests(OnboardCase):
         self.assertIn("python3 scripts/onboard.py wait --bot sales", lines["app"])
         self.assertIn("python3 scripts/onboard.py scopes --bot sales", lines["wait"])
         self.assertIn("python3 scripts/onboard.py relay --bot sales --start", lines["scopes"])
-        self.assertIn("python3 scripts/onboard.py webhook --bot sales --url '<POST to URL>'", lines["relay"])
+        self.assertIn("run: python3 scripts/onboard.py webhook --bot sales.", lines["relay"])
 
     def test_app_next_asks_for_one_message_with_the_qr(self) -> None:
         nxt = kv(self.run_onboard(["app"]).stdout)["next"]
@@ -1217,9 +1262,10 @@ class NextCommandTests(OnboardCase):
             f"python3 scripts/onboard.py routine handler{bot_flag} and "
             f"python3 scripts/onboard.py routine health-check{bot_flag}. "
             "Then, in this order: 1) tell the operator where the webhook URL and key are "
-            "(the handler routine's Webhook section), 2) request a secure secret named "
-            f"LARK_BOT_WEBHOOK_KEY, 3) run: python3 scripts/onboard.py webhook{flags} "
-            "--url '<POST to URL>'. Never put the key on the command line."
+            "(the handler routine's Webhook section), 2) request two secure secrets, "
+            "LARK_BOT_WEBHOOK_URL and then LARK_BOT_WEBHOOK_KEY, so nothing is pasted in chat, "
+            f"3) run: python3 scripts/onboard.py webhook{flags}. "
+            "Never put the key on the command line."
         )
 
     def test_relay_next_when_webhook_is_missing(self) -> None:
@@ -1288,7 +1334,8 @@ class WebhookCheckOnlyTests(OnboardCase):
         self.assertEqual(proc.returncode, 4)
         out = kv(proc.stdout)
         self.assertEqual((out["status"], out["test"]), ("rejected", "rejected (HTTP 401)"))
-        self.assertIn("webhook --url", out["next"])
+        self.assertIn("python3 scripts/onboard.py webhook", out["next"])
+        self.assertIn("two secure secrets", out["next"])
         self.assertEqual(self.file.read_text(), before)
 
     def test_nothing_configured(self) -> None:

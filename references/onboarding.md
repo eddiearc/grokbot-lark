@@ -112,34 +112,38 @@ Every command is safe to repeat.
 ## The webhook
 
 A Grok Bot cannot read the URL or key of its own webhook routine; they are shown only in the
-routine's **Webhook** section on desktop. That makes this the one manual step:
+routine's **Webhook** section on desktop. That makes this the one manual step, and both values
+travel the same way:
 
-1. The operator pastes the **POST to** URL in chat. The URL is useless without the key.
-2. The operator saves the **key** in a secure secret card named `LARK_BOT_WEBHOOK_KEY`.
-3. `python3 scripts/onboard.py webhook --url '<POST to URL>'` writes
-   `<relay dir>/webhook.env` (mode `600`) from the URL and the `LARK_BOT_WEBHOOK_KEY` environment
-   variable. It never prints either value.
+1. The operator pastes **POST to** into a secure secret card named `LARK_BOT_WEBHOOK_URL`.
+2. The operator pastes **key** into a second card named `LARK_BOT_WEBHOOK_KEY`.
+3. `python3 scripts/onboard.py webhook` reads both from the environment and writes
+   `<relay dir>/webhook.env` (mode `600`). It never prints either value.
 4. The same command then sends one test call, a body of `{"type": "relay_test", …}`, and prints
    `test: accepted (HTTP 200)` when the webhook took it. That starts one run of the handler
    routine, whose instruction says to end a `relay_test` run without doing anything. A wrong URL
    or key shows up here (`status: rejected`) instead of at the first real message. `--no-test`
    skips the call.
 
+The command is forgiving about how the values arrive. A card may hold the URL, the key, the
+whole `Authorization: Bearer <key>` header, or both values separated by a space, in either
+card: it tells them apart. `--url '<POST to URL>'` still works when the URL came some other way.
+
 `python3 scripts/onboard.py webhook --check` sends the same test call with the URL and key the
 relay already uses, and writes nothing. Use it after an upgrade or when replies stop.
 
-A secret saved through the card is added to the computer's environment, which every bot on the
-machine shares. If the command reports `key: missing`, the secret did not reach your shell:
+A secret saved through a card is added to the computer's environment, which every bot on the
+machine shares. If the command reports `status: incomplete`, a value did not reach your shell:
 
 - a session that was already running when the secret was saved may not see it. Run the command
   again from a new shell or a new session;
 - or pipe the key from wherever your runtime keeps it:
   `… | python3 scripts/onboard.py webhook --key-stdin --url '<URL>'`;
-- or have the operator put the key in `<relay dir>/webhook.env` themselves
-  (`LARK_BOT_WEBHOOK_KEY=<key>`).
+- or have the operator put the two lines in `<relay dir>/webhook.env` themselves
+  (`LARK_BOT_WEBHOOK_URL=<url>` and `LARK_BOT_WEBHOOK_KEY=<key>`).
 
-A second bot on the same machine must use a secret name of its own, passed with `--key-env`, so
-the two keys do not overwrite each other.
+A second bot on the same machine must use secret names of its own, passed with `--url-env` and
+`--key-env`, so the values of the two bots do not overwrite each other.
 
 The relay re-reads `webhook.env` every two seconds and also accepts `LARK_BOT_WEBHOOK_URL` and
 `LARK_BOT_WEBHOOK_KEY` from its environment when the file leaves them empty. Messages that
