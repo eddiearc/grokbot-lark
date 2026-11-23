@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Onboarding helper run by the Grok Bot itself.
 
-The operator only has to scan one QR code. Every command prints short
+The operator only has to open one link or scan its QR code. Every command prints short
 ``key: value`` lines and a final ``next:`` line that says what to do next, so an
 LLM agent can drive the whole setup by following those lines.
 
@@ -63,6 +63,7 @@ WEBHOOK_TEST_BODY = {
     "Do nothing: send no reply and no chat message.",
 }
 BLOCKED_STATES = {"blocked", "failed", "fail", "missing", "error"}
+SETTLE_SECONDS = 10.0  # how long a change to the app's scopes may take to show up
 
 
 class OnboardError(Exception):
@@ -339,13 +340,11 @@ class Store:
         rc, stdout, _ = self.run(["api", "GET", "/open-apis/bot/v3/info", "--as", "bot"])
         if rc != 0:
             return None, None
+        # lark-cli prints {"ok": true, "data": {"open_id": …, "app_name": …}}; the API itself,
+        # and older lark-cli versions, put the same fields under "bot". Accept either.
         obj = parse_json(stdout)
-        bot = find_key(obj, "bot", lambda v: isinstance(v, dict))
-        if not bot:
-            return None, None
-        open_id = bot.get("open_id") if isinstance(bot.get("open_id"), str) else None
-        name = bot.get("app_name") if isinstance(bot.get("app_name"), str) else None
-        return open_id or None, name or None
+        is_text = lambda v: isinstance(v, str) and bool(v)  # noqa: E731
+        return find_key(obj, "open_id", is_text), find_key(obj, "app_name", is_text)
 
     def make_qr(self, url: str, filename: str) -> Tuple[Optional[str], str]:
         size = 512 if len(url) < 300 else 1024
@@ -403,7 +402,7 @@ def kill_registration(state: dict) -> None:
 def print_waiting(store: Store, state: dict) -> None:
     qr = state.get("qr_png")
     if qr and not Path(qr).is_file():
-        qr, reason = store.make_qr(state.get("full_url") or state["url"], "app-qr.png")
+        qr, reason = store.make_qr(state["url"], "app-qr.png")
         state["qr_png"] = qr
         state["qr_reason"] = reason
         store.write_json(store.app_init, state)
@@ -412,12 +411,10 @@ def print_waiting(store: Store, state: dict) -> None:
         f"bot: {store.bot}",
         f"app_name: {state.get('name', store.bot)}",
         f"qr_png: {qr or 'unavailable (' + state.get('qr_reason', 'not generated') + ')'}",
-        f"qr_carries: {state.get('qr_carries', 'app name')}",
         f"verification_url: {state['url']}",
-        "next: Send the operator ONE message now: attach the QR image (scanning it with Feishu or "
-        "Lark creates the app with every permission in one go) and paste verification_url exactly "
-        "as printed for anyone who cannot scan. Then immediately run: "
-        f"{next_cmd('wait', store.bot)}",
+        "next: Send the operator ONE message now: attach the QR image and paste verification_url "
+        "exactly as printed. Both open the same page, so scanning and clicking give the same "
+        f"result. Then immediately run: {next_cmd('wait', store.bot)}",
     )
 
 
@@ -501,8 +498,8 @@ def landing_url(url: str, page: str) -> str:
     it ignores name, desc, avatar and addons. /page/launcher, the page of the
     official SDK's registerApp flow, reads all of them and completes the same
     registration (same user_code, same acknowledge and finish calls). The query
-    string is kept byte for byte; tp keeps lark-cli's app template for the case
-    where the tenant ignores addons.
+    string is kept byte for byte; tp names lark-cli's app template, which the
+    page uses when it gets no addons or ignores them.
     """
     if page != "launcher":
         return url
@@ -516,14 +513,23 @@ def landing_url(url: str, page: str) -> str:
 
 
 def decorate_url(
-    url: str, name: str, desc: str, avatars: Sequence[str], scopes: Sequence[str], with_scopes: bool
+    url: str, name: str, desc: str, avatars: Sequence[str], with_config_scope: bool
 ) -> str:
+    """Add the app name, description, avatars and, in addons, the one scope `scopes` builds on.
+
+    Every app template grants the same few scopes, the message event included, and none
+    grants APP_CONFIG_SCOPE. Asking for that single scope keeps the link short enough to
+    paste; the full list would make it about 1 KB of base64, which a model cannot be
+    trusted to copy.
+    """
     sep = "&" if "?" in url else "?"
     out_url = url + sep + "name=" + quote(name, safe="") + "&desc=" + quote(desc, safe="")
     for avatar in avatars:
         out_url += "&avatar=" + quote(avatar, safe="")
-    if with_scopes:
-        addons = scope_link.encode_addons(scope_link.build_addons(scopes, (EVENT,)))
+    if with_config_scope:
+        addons = scope_link.encode_addons(
+            scope_link.build_addons((scope_link.APP_CONFIG_SCOPE,), ())
+        )
         out_url += "&addons=" + quote(addons, safe="")
     return out_url + "&createOnly=true"
 
@@ -602,18 +608,15 @@ def cmd_app(args: argparse.Namespace) -> int:
             f"{next_cmd('app', args.bot)} (try again)",
         )
 
-    scopes = scope_link.load_scopes(SCOPES_FILE)
-    # The QR image carries the full link (scopes included); the link printed for pasting is the
-    # same one without the long addons parameter, so it never depends on a model copying it.
-    base_url = landing_url(base_url, args.page)
-    full_url = decorate_url(base_url, name, args.desc, args.avatar, scopes, not args.no_scopes)
-    url = decorate_url(base_url, name, args.desc, args.avatar, scopes, False)
-    qr, reason = store.make_qr(full_url, "app-qr.png")
-    carries = "app name" if args.no_scopes else f"app name, {len(scopes)} bot scopes, {EVENT}"
+    # One link for both the QR image and the text to paste, so the operator gets the same app
+    # whichever they use.
+    url = decorate_url(
+        landing_url(base_url, args.page), name, args.desc, args.avatar, not args.no_scopes
+    )
+    qr, reason = store.make_qr(url, "app-qr.png")
     state = {
         "pid": proc.pid,
         "url": url,
-        "full_url": full_url,
         "qr_png": qr,
         "qr_reason": reason,
         "out_log": str(out_log),
@@ -622,7 +625,6 @@ def cmd_app(args: argparse.Namespace) -> int:
         "started_at": int(time.time()),
         "name": name,
         "brand": args.brand,
-        "qr_carries": carries,
     }
     store.write_json(store.app_init, state)
     print_waiting(store, state)
@@ -764,11 +766,12 @@ def bridge_state(store: Store) -> Tuple[str, List[str]]:
     return "no", blockers
 
 
-def granted_tenant_scopes(store: Store, app_id: str) -> Optional[set]:
-    rc, stdout, _ = store.run(
-        ["api", "GET", f"/open-apis/application/v6/applications/{app_id}",
-         "--params", '{"lang":"zh_cn"}', "--as", "bot"]
-    )
+def tenant_scope_status(store: Store) -> Optional[Dict[str, bool]]:
+    """Every tenant scope the app has asked for, mapped to whether the tenant has granted it.
+
+    The call needs no scope of its own, so it also answers for an app set up by hand.
+    """
+    rc, stdout, _ = store.run(["api", "GET", "/open-apis/application/v6/scopes", "--as", "bot"])
     if rc != 0:
         return None
     obj = parse_json(stdout)
@@ -777,22 +780,65 @@ def granted_tenant_scopes(store: Store, app_id: str) -> Optional[set]:
     items = find_key(obj, "scopes", lambda v: isinstance(v, list))
     if items is None:
         return None
-    granted = set()
+    status: Dict[str, bool] = {}
     for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get("scope"), str):
+        if not isinstance(item, dict) or not isinstance(item.get("scope_name"), str):
             continue
-        types = item.get("token_types")
-        if not types or "tenant" in types:
-            granted.add(item["scope"])
-    return granted
+        if item.get("scope_type") not in (None, "tenant"):
+            continue
+        status[item["scope_name"]] = item.get("grant_status") == 1
+    return status
+
+
+def app_api(store: Store, method: str, app_id: str, action: str, body: dict) -> Tuple[bool, Any]:
+    """Call one of the app's own configuration endpoints as the bot: (ok, reply or reason).
+
+    These endpoints need APP_CONFIG_SCOPE, and with the bot's token an app can change only
+    itself.
+    """
+    rc, stdout, stderr = store.run(
+        ["api", method, f"/open-apis/application/v7/applications/{app_id}/{action}",
+         "--as", "bot", "--data", "-"],
+        stdin_text=json.dumps(body),
+    )
+    obj = parse_json(stdout)
+    if rc == 0 and isinstance(obj, dict) and obj.get("ok") is not False and obj.get("code") in (None, 0):
+        return True, obj
+    # A failed call leaves stdout empty: lark-cli prints {"ok": false, "error": {…}} on stderr.
+    message = find_key(
+        parse_json(stderr) or obj, "message", lambda v: isinstance(v, str) and bool(v)
+    )
+    return False, one_line(
+        message or last_meaningful_line(stderr + "\n" + stdout) or f"lark-cli exited with code {rc}"
+    )
+
+
+def add_scopes(store: Store, app_id: str, scopes: Sequence[str]) -> Tuple[bool, Any]:
+    body = {"scope": {"add_scopes": [{"scope_name": s, "token_type": "tenant"} for s in scopes]}}
+    return app_api(store, "PATCH", app_id, "config", body)
+
+
+def publish_app(store: Store, app_id: str) -> Tuple[bool, str]:
+    """Submit a release of the app. Returns (ok, version or reason)."""
+    ok, reply = app_api(store, "POST", app_id, "publish", {
+        "mobile_default_ability": "bot",
+        "pc_default_ability": "bot",
+        "remark": "Permissions for the Grok Bot bridge (grokbot-lark)",
+        "changelog": "Add bot permissions",
+    })
+    if not ok:
+        return False, reply
+    return True, find_key(reply, "version", lambda v: isinstance(v, str) and bool(v)) or "new"
 
 
 def scopes_report(store: Store, info: dict, required: List[str]) -> dict:
     bridge, blockers = bridge_state(store)
-    granted = granted_tenant_scopes(store, info["app_id"])
+    granted = tenant_scope_status(store)
     missing: Optional[List[str]] = None
+    to_add: List[str] = []
     if granted is not None:
-        missing = [s for s in required if s not in granted]
+        missing = [s for s in required if not granted.get(s)]
+        to_add = [s for s in missing if s not in granted]  # the rest is asked for, not granted yet
     if bridge == "no":
         status = "blocked"
     elif missing is None:
@@ -806,6 +852,8 @@ def scopes_report(store: Store, info: dict, required: List[str]) -> dict:
         "bridge": bridge,
         "blockers": blockers,
         "missing": missing,
+        "to_add": to_add,
+        "can_add": bool(granted and granted.get(scope_link.APP_CONFIG_SCOPE)),
         "granted_n": None if missing is None else len(required) - len(missing),
     }
 
@@ -815,65 +863,115 @@ def cmd_scopes(args: argparse.Namespace) -> int:
     store.cli_path()
     store.ensure()
     info = load_app(store)
+    app_id = info["app_id"]
     required = scope_link.load_scopes(SCOPES_FILE)
     deadline = time.time() + args.wait
     interval = poll_interval(10)
-    while True:
-        report = scopes_report(store, info, required)
-        if report["status"] == "complete" or time.time() >= deadline:
-            break
-        time.sleep(max(0.0, min(interval, deadline - time.time())) or 0.01)
+    try:
+        settle = float(os.environ.get("ONBOARD_SETTLE_SECONDS", SETTLE_SECONDS))
+    except ValueError:
+        settle = SETTLE_SECONDS
+
+    def check(until: float, addable: bool = False) -> dict:
+        """Report until it is complete, the time is up, or (addable) the app can add scopes."""
+        while True:
+            report = scopes_report(store, info, required)
+            if report["status"] == "complete" or time.time() >= until:
+                return report
+            if addable and report["can_add"] and report["missing"]:
+                return report
+            time.sleep(max(0.0, min(interval, until - time.time())) or 0.01)
+
+    # With --wait this also waits for the operator to grant APP_CONFIG_SCOPE.
+    report = check(deadline, addable=True)
+    added = 0
+    apply_error = review = ""
+    if report["missing"] and report["can_add"]:
+        if report["to_add"]:
+            ok, detail = add_scopes(store, app_id, report["to_add"])
+            if ok:
+                added = len(report["to_add"])
+                report = check(time.time() + settle)
+            else:
+                apply_error = detail
+        if not apply_error and report["missing"]:
+            # A scope that needs no review is granted at once. What is still missing takes
+            # effect with a release of the app, which some tenants have an admin approve.
+            ok, detail = publish_app(store, app_id)
+            review = f"release {detail} submitted" if ok else f"no release submitted ({detail})"
+            report = check(max(deadline, time.time() + settle))
 
     status = report["status"]
-    qr = None
+    missing = report["missing"]
     lines = [
         f"status: {status}",
         f"bridge_ready: {report['bridge']}",
         "granted: " + ("unknown" if report["granted_n"] is None else f"{report['granted_n']}/{len(required)}"),
     ]
+    if added:
+        lines.append(f"added: {added}")
+    if apply_error:
+        lines.append(f"apply_error: {apply_error}")
+    if review:
+        lines.append(f"review: {review}")
     for blocker in report["blockers"]:
         lines.append(f"blocker: {blocker}")
-    if status != "complete":
-        targets = required if report["missing"] is None else report["missing"]
-        if report["missing"]:
-            lines.append("missing: " + ",".join(report["missing"]))
-        apply_url = scope_link.launcher_url(
-            info["app_id"], info["brand"], scope_link.build_addons(targets, (EVENT,))
-        )
-        qr, reason = store.make_qr(apply_url, "scopes-qr.png")
-        if qr:
-            lines += [
-                f"apply_qr_png: {qr}",
-                f"permissions_page: {scope_link.open_host(info['brand'])}/app/{info['app_id']}/auth",
-            ]
-        else:
-            lines += [
-                f"apply_url: {apply_url}",
-                f"apply_qr_png: unavailable ({reason})",
-                f"fallback_url: {scope_link.build_url(info['app_id'], info['brand'], targets)}",
-                "fallback_note: after confirming on the fallback page, publish a new app version "
-                "in the developer console",
-            ]
+    if missing:
+        lines.append("missing: " + ",".join(missing))
+    # One confirmation on this page gives the app APP_CONFIG_SCOPE; the next run adds the rest.
+    need_grant = bool(missing) and not report["can_add"]
+    qr = None
+    if need_grant:
+        grant_url = scope_link.build_url(app_id, info["brand"], [scope_link.APP_CONFIG_SCOPE])
+        qr, reason = store.make_qr(grant_url, "grant-qr.png")
+        lines += [
+            f"grant_url: {grant_url}",
+            f"grant_qr_png: {qr or 'unavailable (' + reason + ')'}",
+        ]
+    lines.append(f"permissions_page: {scope_link.open_host(info['brand'])}/app/{app_id}/auth")
+
     relay_cmd = next_cmd("relay", args.bot, "--start")
+    wait_cmd = next_cmd("scopes", args.bot, "--wait 600")
     if status == "complete":
         nxt = relay_cmd
-    elif status == "blocked":
-        send = (
-            "apply_qr_png to scan (permissions_page is the manual alternative)"
-            if qr
-            else "apply_url exactly as printed"
+    elif need_grant and not args.wait:
+        send = "paste grant_url exactly as printed" + (
+            " and attach grant_qr_png (both open the same page)" if qr else ""
         )
+        lead = "The relay cannot receive messages yet. " if status == "blocked" else ""
         nxt = (
-            f"The relay cannot receive messages yet. Send the operator {send}, "
-            f"then run: {next_cmd('scopes', args.bot, '--wait 600')}"
+            f"{lead}Send the operator ONE message now: {send}. One confirmation there lets you "
+            f"add the missing permissions yourself. Then immediately run: {wait_cmd}"
+        )
+    elif status == "blocked":
+        if need_grant:
+            nxt = "The operator has not confirmed yet. Run the same command again; do not message them again."
+        else:
+            nxt = (
+                "The relay cannot receive messages yet; the blocker lines say why. If a tenant "
+                "admin has to approve the app, tell the operator. Then run: " + wait_cmd
+            )
+    elif need_grant:
+        nxt = (
+            f"The operator has not confirmed yet. Continue with: {relay_cmd}. In your final setup "
+            "message, repeat grant_url once and ask the operator to tell you when they have "
+            f"confirmed; then run: {next_cmd('scopes', args.bot)}"
+        )
+    elif apply_error:
+        nxt = (
+            f"Continue with: {relay_cmd}. In your final setup message, say that some permissions "
+            "could not be added automatically and give permissions_page."
+        )
+    elif review:
+        nxt = (
+            f"Continue with: {relay_cmd}. In your final setup message, say that the remaining "
+            "permissions take effect once a tenant admin approves the app release."
         )
     else:
-        how = (
-            "attach apply_qr_png once and say that scanning it adds the remaining permissions"
-            if qr
-            else "send apply_url exactly as printed"
+        nxt = (
+            f"Continue with: {relay_cmd}. The permissions could not be read now; run "
+            f"{next_cmd('scopes', args.bot)} again later."
         )
-        nxt = f"Continue with: {relay_cmd}. In your final setup message, {how}; do not wait for it."
     lines.append(f"next: {nxt}")
     out(*lines)
     return 3 if status == "blocked" else 0
@@ -1324,7 +1422,7 @@ def cmd_routine(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="onboard.py",
-        description="Set up a Grok Bot on Feishu/Lark. The operator scans one QR code; "
+        description="Set up a Grok Bot on Feishu/Lark. The operator confirms on one page; "
         "every command prints key: value lines and a final 'next:' line to follow.",
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -1348,9 +1446,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="public https image URL for the app avatar (repeatable, max 6)")
     p.add_argument("--brand", type=brand_arg, default="feishu",
                    help="feishu (China, default) or lark (international; aliases larksuite, international)")
-    p.add_argument("--no-scopes", action="store_true", help="do not preset scopes and the message event")
+    p.add_argument("--no-scopes", action="store_true",
+                   help="do not ask for the permission that lets the bot add its own scopes "
+                   "(application:application:patch)")
     p.add_argument("--page", choices=("launcher", "cli"), default="launcher",
-                   help="app-creation page: launcher (default; honors the name, avatar and scopes) "
+                   help="app-creation page: launcher (default; honors the name, avatar and addons) "
                    "or cli (lark-cli's own page, which ignores them)")
     p.add_argument("--force", action="store_true", help="replace an already configured store")
     p.add_argument("--app-id", help="import mode: existing app id; the secret is read from stdin")
@@ -1368,13 +1468,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "scopes",
-        help="show granted vs missing scopes and whether the bridge is ready",
+        help="add the bot scopes that are missing and report whether the bridge is ready",
         description="Check which required bot scopes are granted and whether the message bridge is "
-        "ready. Exit 0 complete/partial/unknown, 3 blocked.",
+        "ready. Missing scopes are added through the API when the app holds "
+        "application:application:patch; otherwise a link is printed that grants it. "
+        "Exit 0 complete/partial/unknown, 3 blocked.",
     )
     common(p)
     p.add_argument("--wait", type=float, default=0, metavar="SECONDS",
-                   help="re-check every 10 s until complete or the time is up (default: 0, check once)")
+                   help="re-check every 10 s until complete or the time is up, adding the scopes "
+                   "as soon as the operator has granted the permission (default: 0, check once)")
     p.set_defaults(func=cmd_scopes)
 
     p = sub.add_parser(

@@ -4,8 +4,8 @@ A skill that connects a [Grok Bot](https://docs.x.ai/grok-bot) to **Feishu** (Ch
 (international). People DM the bot or @mention it in a group; the bot answers as itself, with
 its own app, name, and permissions.
 
-The skill is written for the bot. You hand it over, the bot does the setup, and you scan one QR
-code.
+The skill is written for the bot. You hand it over, the bot does the setup, and you confirm on
+one page.
 
 ## Set it up
 
@@ -15,10 +15,10 @@ Tell your Grok Bot:
 
 What happens next:
 
-1. The bot sends you a QR code and a link. Scan the code with Feishu/Lark and confirm. That
-   creates the bot's app under the bot's own name, with its permissions, and publishes it. The
-   link is for when you cannot scan; it creates the app with default permissions, and the bot
-   sends one more code for the rest.
+1. The bot sends you a link and a QR code of the same link. Open either one and confirm. That
+   creates the bot's app under the bot's own name and publishes it. The page asks for one
+   permission, "Modify app info" (修改应用信息): the bot uses it to add the rest of its
+   permissions itself, so this one confirmation is all it needs from you.
 2. The bot installs a small relay on its computer and creates two routines for itself.
 3. The bot asks for the webhook URL and key of one of those routines. A Grok Bot cannot read
    them itself, so you copy them from the routine's **Webhook** section into the two secure
@@ -50,9 +50,9 @@ Outbound   Grok Bot ── lark-cli im +messages-reply … --as bot ──▶ Fe
 | [`SKILL.md`](SKILL.md) | The bot's operating manual: setup, handling messages, operations. |
 | [`references/`](references/) | Onboarding details, architecture, troubleshooting, several bots on one machine. |
 | [`scripts/onboard.py`](scripts/onboard.py) | The setup tool the bot runs: `app`, `wait`, `scopes`, `relay`, `webhook`. |
-| [`scripts/scope_link.py`](scripts/scope_link.py) | Builds permission links from the scope list. |
+| [`scripts/scope_link.py`](scripts/scope_link.py) | Builds permission links from the scope list, for adding scopes by hand. |
 | [`relay/`](relay/) | The relay and its `start.sh`, `stop.sh`, and `status.sh`. |
-| [`scopes/`](scopes/) | The bot scopes requested at creation. |
+| [`scopes/`](scopes/) | The bot scopes the app is given. |
 | [`templates/`](templates/) | Instructions for the two routines, and example env files. |
 
 ## Requirements
@@ -63,11 +63,16 @@ standard library.
 
 ## Good to know
 
-- **Permissions.** The scan requests every scope in
+- **Permissions.** The bot gives its app every scope in
   [`scopes/bot-scopes.txt`](scopes/bot-scopes.txt): chat, contacts, documents, Base, sheets, wiki,
   and drive. Four are left out on purpose and listed at the end of that file: urgent phone calls
   and SMS, document ownership transfer, and document deletion. Edit the file before setup to ask
   for more or less.
+- **The app can change its own permissions.** That is what "Modify app info" allows, and it is
+  how the bot adds scopes without sending you to the developer console. The app keeps it, so a
+  later version of this skill can add a scope the same way. If you would rather confirm every
+  change yourself, remove it on the app's permission page; the bot then sends you a link to
+  confirm whenever a scope is missing.
 - **Who can use the bot.** Anyone who can DM the bot or @mention it can give it work, and the bot
   treats every sender as an ordinary user. Set the app's availability range in the developer
   console to limit who that is.

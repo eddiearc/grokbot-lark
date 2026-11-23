@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Build bot (tenant) scope links from scopes/bot-scopes.txt.
 
-Two link styles exist:
+``onboard.py`` does not need these long links: it asks for one scope
+(``APP_CONFIG_SCOPE``) and then adds the rest through the API. This command is
+for doing it by hand. Two link styles exist:
 
-* classic: ``/page/scope-apply`` -- the operator confirms, then must publish a
-  new app version in the developer console.
-* launcher (``--launcher``): ``/page/launcher`` with ``addons`` -- one scan, and
-  the page publishes the version by itself (when the tenant supports it).
+* classic: ``/page/scope-apply`` -- the operator confirms on a plain page.
+  Scopes that need review take effect after a new app version is published.
+* launcher (``--launcher``): ``/page/launcher`` with ``addons`` -- the page shows
+  the difference and publishes the version by itself (when the tenant supports it).
 
 The helpers in this module are imported by ``onboard.py``.
 """
@@ -24,6 +26,9 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCOPES = ROOT / "scopes" / "bot-scopes.txt"
 DEFAULT_EVENTS = ("im.message.receive_v1",)
+# "Modify app info". An app that holds it can add scopes to itself through the API
+# (PATCH /open-apis/application/v7/applications/<app_id>/config). No app template includes it.
+APP_CONFIG_SCOPE = "application:application:patch"
 
 OPEN_HOSTS = {
     "feishu": "https://open.feishu.cn",
@@ -62,7 +67,7 @@ def load_scopes(path: Path) -> list[str]:
 
 
 def build_url(app_id: str, brand: str, scopes: Sequence[str]) -> str:
-    """Classic scope-apply link (the operator must publish a version afterwards)."""
+    """Classic scope-apply link: a plain page with one confirm button."""
     base = open_host(brand) + "/page/scope-apply"
     encoded = quote(",".join(scopes), safe="")
     return f"{base}?clientID={app_id}&scopes={encoded}"
