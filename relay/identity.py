@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Callable
@@ -333,6 +334,8 @@ def build_payload(
 
     mentions = resolver.resolve_mentions(event.get("mentions") or [])
 
+    # Short fields first, the message text and the raw event last: if the body
+    # is cut anywhere, it is cut in the bulky tail.
     payload: dict[str, Any] = {
         "message_id": message_id,
         "chat_id": chat_id,
@@ -341,14 +344,75 @@ def build_payload(
         "sender": sender_out,
         "chat": chat_out,
         "mentions": mentions,
-        "text": text,
-        "summary": build_summary(text, sender_out, chat_out),
-        "console_url": console_url(),
-        "instructions": build_instructions(message_id),
-        "raw": event,
     }
     if name_unresolved:
         payload["name_unresolved"] = True
     if reaction_id:
         payload["reaction_id"] = reaction_id
+    payload.update(
+        {
+            "summary": build_summary(text, sender_out, chat_out),
+            "console_url": console_url(),
+            "instructions": build_instructions(message_id),
+            "text": text,
+            "raw": event,
+        }
+    )
     return payload
+
+
+# A routine webhook hands at most about 4,000 characters of the request body to
+# the run. Stay below that in UTF-8 bytes, so the limit holds for CJK text
+# whichever way the platform counts. LARK_WEBHOOK_BODY_LIMIT overrides it; 0
+# turns the limit off.
+WEBHOOK_BODY_LIMIT = 3600
+
+
+def body_limit() -> int:
+    raw = os.environ.get("LARK_WEBHOOK_BODY_LIMIT", "").strip()
+    try:
+        return int(raw) if raw else WEBHOOK_BODY_LIMIT
+    except ValueError:
+        return WEBHOOK_BODY_LIMIT
+
+
+def body_size(payload: dict[str, Any]) -> int:
+    """Size of the payload as relay.py posts it."""
+    return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def fit_payload(payload: dict[str, Any], limit: int | None = None) -> dict[str, Any]:
+    """Make a payload fit the webhook body limit.
+
+    The raw event goes first (it repeats the other fields). If that is not
+    enough the text is shortened, text_truncated is set, and the instructions
+    say how to read the whole message with lark-cli.
+    """
+    limit = body_limit() if limit is None else limit
+    if limit <= 0 or body_size(payload) <= limit:
+        return payload
+    fitted = dict(payload)
+    fitted.pop("raw", None)
+    if body_size(fitted) <= limit:
+        return fitted
+    text = str(fitted.get("text") or "")
+    mid = fitted.get("message_id") or "<message_id>"
+    fitted["text_truncated"] = True
+    fitted["text_length"] = len(text)
+    fitted["instructions"] = (
+        str(fitted.get("instructions") or "")
+        + "\nThe text in this payload was shortened to fit the webhook (text_truncated). "
+        "Read the whole message before you act: "
+        f'source "{store_env_path().expanduser().absolute()}" && '
+        f"lark-cli im +messages-mget --message-ids {mid} --as bot"
+    )
+    lo, hi = 0, len(text)
+    while lo < hi:  # the longest prefix of the text that still fits
+        keep = (lo + hi + 1) // 2
+        fitted["text"] = text[:keep]
+        if body_size(fitted) <= limit:
+            lo = keep
+        else:
+            hi = keep - 1
+    fitted["text"] = text[:lo]
+    return fitted

@@ -24,6 +24,8 @@ source "<this bot's store env file>" && lark-cli im +messages-reply --message-id
 - Reply in the sender's language. Use `--markdown` for formatted answers.
 - For a task that takes more than a minute, send a one-line acknowledgement first, then send the
   result as a second reply.
+- If `text_truncated` is true, the message was too long for the webhook. Read the whole message
+  with the `im +messages-mget` command at the end of `instructions` before you act on it.
 
 ## Who is asking
 

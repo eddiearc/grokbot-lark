@@ -19,7 +19,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from identity import IdentityResolver, build_payload
+from identity import IdentityResolver, build_payload, fit_payload
 from lifecycle import POLL_INTERVAL, Lifecycle
 from store import Store
 
@@ -394,7 +394,7 @@ def handle_event(event: dict[str, Any]) -> None:
         job = life.start_working(mid, chat_id, chat_type)
         reaction_id = (job or {}).get("reaction_id")
     if resolver is not None:
-        body = build_payload(event, resolver, reaction_id=reaction_id)
+        body = fit_payload(build_payload(event, resolver, reaction_id=reaction_id))
     else:
         content = event.get("content")
         body = {
