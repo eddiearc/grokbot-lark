@@ -40,6 +40,7 @@ CONSUME_CMD = [
     "--as",
     "bot",
 ]
+LISTEN_SCRIPT = BASE / "listen.mjs"
 SEEN_MAX = 50000
 # The websocket lives in lark-cli's event bus daemon, not in the consumer. After a
 # ping timeout the SDK can report a reconnect and still deliver nothing, and a bus
@@ -404,6 +405,7 @@ def handle_event(event: dict[str, Any]) -> None:
         return
     chat_id = str(event.get("chat_id") or "")
     chat_type = str(event.get("chat_type") or "")
+    render_content(event)
     reaction_id = None
     if life is not None and mid and chat_id:
         job = life.start_working(mid, chat_id, chat_type)
@@ -478,6 +480,39 @@ def stdout_reader(pipe) -> None:
             pipe.close()
         except Exception:
             pass
+
+
+def listener_cmd() -> tuple[list[str], str]:
+    """The command that receives events, and its name for the log.
+
+    listen.mjs (the official Node SDK, which notices a dead connection and reopens it
+    in place) when it can run; otherwise `lark-cli event consume`.
+    """
+    if os.environ.get("LARK_RELAY_LISTENER", "").strip().lower() == "lark-cli":
+        return CONSUME_CMD, "lark-cli"
+    node = shutil.which("node")
+    if not node or not LISTEN_SCRIPT.is_file():
+        return CONSUME_CMD, "lark-cli"
+    try:
+        r = subprocess.run([node, str(LISTEN_SCRIPT), "--check"], capture_output=True, timeout=30)
+    except Exception as e:
+        log("listener_check_failed", error=type(e).__name__)
+        return CONSUME_CMD, "lark-cli"
+    if r.returncode != 0:
+        detail = r.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:]
+        log("listener_check_failed", returncode=r.returncode, detail=detail[0] if detail else "")
+        return CONSUME_CMD, "lark-cli"
+    return [node, str(LISTEN_SCRIPT)], "node-sdk"
+
+
+def render_content(event: dict[str, Any]) -> None:
+    """Fill in the text of a message listen.mjs did not render (anything but plain text)."""
+    if not event.pop("content_pending", False):
+        return
+    mid = str(event.get("message_id") or "")
+    msg = resolver._mget_one(mid) if resolver is not None and mid else None
+    content = (msg or {}).get("content")
+    event["content"] = content if isinstance(content, str) and content else "[%s]" % (event.get("message_type") or "message")
 
 
 def bus_log_path() -> Path | None:
@@ -594,11 +629,14 @@ def main() -> int:
     except Exception as e:
         log("startup_reconcile_failed", error=type(e).__name__)
 
+    # A bus left running would hold a second connection and take part of the events.
     stop_bus()
+    cmd, listener = listener_cmd()
+    log("listener", kind=listener)
     env = os.environ.copy()
     ready = threading.Event()
     proc = subprocess.Popen(
-        CONSUME_CMD,
+        cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -633,7 +671,7 @@ def main() -> int:
     last_flush = time.time()
     last_poll = 0.0
     last_bus_check = time.time()
-    watch = BusWatch(bus_log_path())
+    watch = BusWatch(bus_log_path()) if listener == "lark-cli" else None
     recycle = None
     while not stop_event.is_set():
         rc = proc.poll()
@@ -657,7 +695,7 @@ def main() -> int:
             last_poll = now
         if now - last_bus_check >= BUS_CHECK_SEC:
             last_bus_check = now
-            recycle = watch.check()
+            recycle = watch.check() if watch else None
             if recycle:
                 log("connection_recycle", reason=recycle)
                 break

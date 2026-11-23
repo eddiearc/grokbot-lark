@@ -22,6 +22,7 @@ done
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/grokbot-lark-e2e.XXXXXX")"
 export HOME="${WORK}/home"
 export FAKE_CTRL="${WORK}/ctrl"
+export ONBOARD_SKIP_NODE_SDK=1
 export FAKE_SCOPES="${REPO}/scopes/bot-scopes.txt"
 mkdir -p "${HOME}/.local/bin" "${FAKE_CTRL}"
 cp "${HERE}/fake-lark-cli.py" "${HOME}/.local/bin/lark-cli"
@@ -118,7 +119,7 @@ PY
 echo "== 6. status while healthy"
 "${RELAY}/status.sh" > "${WORK}/status.out" 2>&1
 rc=$?
-check "status healthy" '[[ ${rc} -eq 0 ]] && grep -q "^status: healthy" "${WORK}/status.out" && grep -q "event consume processes: 1" "${WORK}/status.out"'
+check "status healthy" '[[ ${rc} -eq 0 ]] && grep -q "^status: healthy" "${WORK}/status.out" && grep -q "event listener processes: 1" "${WORK}/status.out"'
 check "every relay call used this bot's store" 'grep -q "\"config_dir\": \"${HOME}/.lark-bots/e2e/config\"" "${FAKE_CTRL}/calls.log" && ! grep -q "/.lark-cli\"" "${FAKE_CTRL}/calls.log"'
 
 echo "== 7. the bot replies; the working reaction goes away at the next poll (up to 25 s)"

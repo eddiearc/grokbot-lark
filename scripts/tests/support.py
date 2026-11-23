@@ -238,6 +238,7 @@ class OnboardCase(unittest.TestCase):
             "FAKE_CONTROL": str(self.ctl),
             "ONBOARD_POLL_SECONDS": "0.1",
             "ONBOARD_SETTLE_SECONDS": "0.3",
+            "ONBOARD_SKIP_NODE_SDK": "1",
             "ONBOARD_URL_TIMEOUT": "10",
             "PYTHONDONTWRITEBYTECODE": "1",
             # webhook tests that exercise the connectivity check set this to 0 and use a loopback server
