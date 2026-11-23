@@ -967,14 +967,21 @@ def cmd_relay(args: argparse.Namespace) -> int:
             out(f"error: start.sh not found in {relay_dir}")
             code = 1
         else:
+            stopped = True
             if stop.is_file():
-                _, lines = run_script(stop)
+                stop_rc, lines = run_script(stop)
                 for line in lines:
                     out(f"relay: {line}")
-            rc, lines = run_script(start)
-            for line in lines:
-                out(f"relay: {line}")
-            code = rc
+                if stop_rc != 0:
+                    # Starting now would only report "already running" on the old code.
+                    out("error: the running relay did not stop, so it still runs the previous code")
+                    stopped = False
+                    code = 1
+            if stopped:
+                rc, lines = run_script(start)
+                for line in lines:
+                    out(f"relay: {line}")
+                code = rc
     if configured:
         nxt = f"{relay_dir / 'status.sh'}"
     else:

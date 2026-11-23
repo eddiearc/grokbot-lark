@@ -50,6 +50,39 @@ FAKE_RELAY = textwrap.dedent(
     """
 )
 
+# The supervisor of the first release: TERM ran cleanup and the loop carried on,
+# so the relay came back. stop.sh must still be able to end it during an upgrade.
+LEGACY_SUPERVISOR = textwrap.dedent(
+    """\
+    #!/usr/bin/env bash
+    set -eu
+    BASE="$(cd "$(dirname "$0")" && pwd)"
+    mkdir -p "${BASE}/logs" "${BASE}/state"
+    exec 9>"${BASE}/state/supervisor.lock"
+    flock -n 9 || exit 1
+    echo "$$" > "${BASE}/state/supervisor.pid"
+    cleanup() {
+      if [[ -n "${RELAY_PID:-}" ]] && kill -0 "${RELAY_PID}" 2>/dev/null; then
+        kill -TERM "${RELAY_PID}" 2>/dev/null || true
+        wait "${RELAY_PID}" 2>/dev/null || true
+      fi
+      rm -f "${BASE}/state/supervisor.pid" "${BASE}/state/relay.pid"
+    }
+    trap cleanup EXIT INT TERM
+    while true; do
+      python3 "${BASE}/relay.py" >> "${BASE}/logs/relay.out" 2>&1 &
+      RELAY_PID=$!
+      echo "${RELAY_PID}" > "${BASE}/state/relay.pid"
+      set +e
+      wait "${RELAY_PID}"
+      set -e
+      rm -f "${BASE}/state/relay.pid"
+      RELAY_PID=""
+      sleep 2
+    done
+    """
+)
+
 STUB_FLOCK = "#!/bin/sh\nexit 0\n"
 STUB_LARK_CLI = textwrap.dedent(
     """\
@@ -141,6 +174,13 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def process_gone(pid: int) -> bool:
+    """True when the process no longer runs (an unreaped zombie counts as gone)."""
+    proc = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    state = proc.stdout.strip()
+    return not state or state.startswith("Z")
 
 
 class SupervisorTests(ShellCase):
@@ -253,6 +293,82 @@ class StartStopTests(ShellCase):
         again = self.run_script("stop.sh")
         self.assertEqual(again.returncode, 0)
         self.assertIn("relay is not running", again.stdout)
+
+    def lock_is_free(self) -> bool:
+        lock = self.relay / "state" / "supervisor.lock"
+        return subprocess.run(["flock", "-n", str(lock), "true"], env=self.env).returncode == 0
+
+    def relay_processes(self) -> str:
+        listing = subprocess.run(["ps", "-eo", "stat=,args="], capture_output=True, text=True).stdout
+        return "\n".join(
+            line for line in listing.splitlines()
+            if str(self.relay / "relay.py") in line and not line.lstrip().startswith("Z")
+        )
+
+    def test_stop_ends_a_first_release_supervisor_that_survives_term(self):
+        (self.relay / "supervisor.sh").write_text(LEGACY_SUPERVISOR)
+        sup = subprocess.Popen(
+            [str(self.relay / "supervisor.sh")],
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.procs.append(sup)
+        self.assertTrue(self.wait_for(lambda: self._pid_from("relay.pid") is not None))
+        self.assertFalse(self.lock_is_free())
+        stopped = self.run_script("stop.sh", env={"LARK_RELAY_STOP_GRACE": "4"}, timeout=90)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertIn("relay stopped", stopped.stdout)
+        self.assertIsNotNone(sup.wait(timeout=5))
+        self.assertTrue(self.lock_is_free())
+        self.assertEqual(self.relay_processes(), "")
+        self.assertIsNone(self._pid_from("supervisor.pid"))
+
+    def test_stop_finds_a_first_release_supervisor_that_deleted_its_pid_file(self):
+        # After one TERM the first release removed supervisor.pid and kept running.
+        (self.relay / "supervisor.sh").write_text(LEGACY_SUPERVISOR)
+        sup = subprocess.Popen(
+            [str(self.relay / "supervisor.sh")],
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.procs.append(sup)
+        self.assertTrue(self.wait_for(lambda: self._pid_from("relay.pid") is not None))
+        first_relay = self._pid_from("relay.pid")
+        os.kill(sup.pid, signal.SIGTERM)
+        self.assertTrue(
+            self.wait_for(lambda: self._pid_from("relay.pid") not in (None, first_relay), timeout=20)
+        )
+        self.assertIsNone(self._pid_from("supervisor.pid"))
+        self.assertIsNone(sup.poll())  # still running, still holding the lock
+        stopped = self.run_script("stop.sh", env={"LARK_RELAY_STOP_GRACE": "4"}, timeout=120)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertIn("relay stopped", stopped.stdout)
+        self.assertIsNotNone(sup.wait(timeout=5))
+        self.assertTrue(self.lock_is_free())
+        self.assertEqual(self.relay_processes(), "")
+
+    def test_stop_ends_a_relay_whose_supervisor_died(self):
+        started = self.run_script("start.sh", env={"LARK_RELAY_READY_TIMEOUT": "30"})
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        sup, relay = self._pid_from("supervisor.pid"), self._pid_from("relay.pid")
+        os.kill(sup, signal.SIGKILL)
+        self.assertTrue(self.wait_for(lambda: process_gone(sup)))
+        self.assertFalse(process_gone(relay))
+        self.assertFalse(self.lock_is_free())  # relay.py inherited the lock
+        stopped = self.run_script("stop.sh", env={"LARK_RELAY_STOP_GRACE": "3"}, timeout=90)
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertIn("relay stopped", stopped.stdout)
+        self.assertTrue(self.wait_for(lambda: process_gone(relay)))
+        self.assertTrue(self.lock_is_free())
+        restarted = self.run_script("start.sh", env={"LARK_RELAY_READY_TIMEOUT": "30"})
+        self.assertEqual(restarted.returncode, 0, restarted.stdout + restarted.stderr)
+        self.assertIn("long connection ready", restarted.stdout)
 
 
 if __name__ == "__main__":

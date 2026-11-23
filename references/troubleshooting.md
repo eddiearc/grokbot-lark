@@ -33,7 +33,7 @@ Start with the health report. It ends with `status: healthy`, or with `status: u
 | Replies come from the wrong bot. | A `lark-cli` call ran without sourcing this bot's store env file. | Use the command in the payload's `instructions`. |
 | `webhook_post_failed` with `http_401` or `http_403`. | Wrong or outdated key. | `python3 scripts/onboard.py webhook --url '<URL>'` with the current key. |
 | `webhook_post_failed` during a burst of messages. | The handler routine reached its limit of 200 runs an hour. | Nothing to do: messages stay in the spool and are delivered later. |
-| `start.sh` says "already running" but `status.sh` says `listener_down`. | The supervisor died and left `relay.py` holding the lock. | `pkill -f "$HOME/.lark-relay/relay.py"`, then `~/.lark-relay/start.sh`. |
+| `start.sh` says "already running" but `status.sh` says `listener_down`. | The supervisor died and left `relay.py` holding the lock, or a supervisor from the first release is still running without its pid file. | `~/.lark-relay/stop.sh`, then `~/.lark-relay/start.sh`. `stop.sh` finds and ends both. |
 | `consume.stderr.log` says another bus is already connected. | A second relay, or a manual `lark-cli event consume`, uses the same store. | Stop the other one. Each bot needs its own store and relay directory. |
 | `npm install -g @larksuite/cli` fails with a permission error. | The global npm directory is not writable. | `npm install -g --prefix ~/.local @larksuite/cli`. Every script here puts `~/.local/bin` first on `PATH`. |
 | The bot stopped after sending the scan link and did not continue. | The runtime ended the turn when the bot messaged the operator. | Send the bot any message. `onboard.py wait` then returns at once and setup carries on from step 2. |
@@ -51,6 +51,21 @@ source ~/.lark-bots/lark-bot/env.sh && lark-cli event consume im.message.receive
 `relay.jsonl` event names worth knowing: `consumer_ready`, `forwarded`, `skipped` (with a
 `reason`), `spooled_webhook_unconfigured`, `spooled_after_post_failure`, `webhook_post_failed`,
 `reaction_added`, `reaction_complete`, `reaction_timeout`, `reaction_abandoned`.
+
+## Upgrading
+
+```bash
+git pull
+python3 scripts/onboard.py relay --start
+```
+
+This replaces the relay code, keeps `webhook.env`, the logs and the state, writes `relay.env`
+from the app, stops the running relay, and starts the new one. It also works on an install of
+the first release, which had no `start.sh`, `stop.sh`, or `relay.env`, and whose supervisor did
+not exit on TERM: `stop.sh` ends it anyway.
+
+Afterwards replace the instructions of both routines with the current text in `templates/`.
+Edit the routines in place; a new handler routine would get a new webhook URL and key.
 
 ## Starting over
 
