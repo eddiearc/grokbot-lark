@@ -23,7 +23,7 @@ python3 scripts/onboard.py wait    --bot sales-bot
 python3 scripts/onboard.py scopes  --bot sales-bot
 python3 scripts/onboard.py relay   --bot sales-bot --start
 python3 scripts/onboard.py webhook --bot sales-bot \
-  --key-env LARK_BOT_WEBHOOK_KEY_SALES_BOT --url '<POST to URL>'
+  --url-env SALES_BOT_WEBHOOK_URL --key-env SALES_BOT_WEBHOOK_KEY
 ```
 
 The default bot (`lark-bot`) uses `~/.lark-bots/lark-bot` and `~/.lark-relay`. Any other name
@@ -31,9 +31,9 @@ gets `~/.lark-bots/<name>` and `~/.lark-relay-<name>`; `--relay-dir` overrides t
 `onboard.py relay` refuses to install into a relay directory that already belongs to another
 bot.
 
-Saved secrets are environment variables of the whole computer, so ask for this bot's webhook key
-under a name of its own (here `LARK_BOT_WEBHOOK_KEY_SALES_BOT`) and pass that name with
-`--key-env`.
+Saved secrets are environment variables of the whole computer, so ask for this bot's webhook URL
+and key under names of their own (here `SALES_BOT_WEBHOOK_URL` and `SALES_BOT_WEBHOOK_KEY`) and
+pass those names with `--url-env` and `--key-env`.
 
 Take that bot's routine instructions from `python3 scripts/onboard.py routine handler --bot
 sales-bot` and `… routine health-check --bot sales-bot`: they name its relay directory instead

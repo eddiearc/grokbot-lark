@@ -1099,9 +1099,10 @@ def cmd_relay(args: argparse.Namespace) -> int:
             f"python3 scripts/onboard.py routine handler{bot_flag} and "
             f"python3 scripts/onboard.py routine health-check{bot_flag}. "
             "Then, in this order: 1) tell the operator where the webhook URL and key are "
-            "(the handler routine's Webhook section), 2) request a secure secret named "
-            f"LARK_BOT_WEBHOOK_KEY, 3) run: python3 scripts/onboard.py webhook{flags} "
-            "--url '<POST to URL>'. Never put the key on the command line."
+            "(the handler routine's Webhook section), 2) request two secure secrets, "
+            "LARK_BOT_WEBHOOK_URL and then LARK_BOT_WEBHOOK_KEY, so nothing is pasted in chat, "
+            f"3) run: python3 scripts/onboard.py webhook{flags}. "
+            "Never put the key on the command line."
         )
     out(f"next: {nxt}")
     return code
@@ -1140,8 +1141,8 @@ def send_webhook_test(url: str, key: str) -> Tuple[str, str]:
 
 WEBHOOK_REJECTED_NEXT = (
     "The URL or key does not match. Ask the operator to copy both again from the "
-    "routine's Webhook section (clicking a field copies it), save the key in the "
-    "secret again, then run: python3 scripts/onboard.py webhook --url '<POST to URL>'"
+    "routine's Webhook section (clicking a field copies it) into the two secure secrets, "
+    "then run: python3 scripts/onboard.py webhook"
 )
 WEBHOOK_FAILED_NEXT = (
     "The webhook did not accept the call. Check that the routine exists and is not "
@@ -1161,8 +1162,8 @@ def webhook_check(args: argparse.Namespace, relay_dir: Path, path: Path) -> int:
             f"url: {'set' if url else 'missing'}",
             f"key: {'set' if key else 'missing'}",
             f"file: {path}",
-            "next: Nothing was changed. Save the webhook first: "
-            "python3 scripts/onboard.py webhook --url '<POST to URL>'",
+            "next: Nothing was changed. Save the webhook first: request the secure secrets "
+            "LARK_BOT_WEBHOOK_URL and LARK_BOT_WEBHOOK_KEY, then run: python3 scripts/onboard.py webhook",
         )
         return 3
     verdict, detail = send_webhook_test(url, key)
@@ -1178,6 +1179,26 @@ def webhook_check(args: argparse.Namespace, relay_dir: Path, path: Path) -> int:
     return 4
 
 
+def sort_webhook_inputs(*values: str) -> Tuple[str, str]:
+    """Pick the URL and the key out of whatever the operator pasted.
+
+    Each value may hold the URL, the key, the whole "Authorization: Bearer <key>"
+    header, or both separated by whitespace, in either order. So it does not
+    matter which secret card got which value, or whether one card got both.
+    """
+    url = key = ""
+    for value in values:
+        cleaned = re.sub(r"authorization\s*:", " ", value or "", flags=re.I)
+        for token in cleaned.split():
+            if token.lower() == "bearer":
+                continue
+            if re.match(r"^https?://", token, flags=re.I):
+                url = url or token
+            else:
+                key = key or token
+    return url, key
+
+
 def cmd_webhook(args: argparse.Namespace) -> int:
     relay_dir = relay_dir_for(args)
     path = relay_dir / "webhook.env"
@@ -1185,15 +1206,21 @@ def cmd_webhook(args: argparse.Namespace) -> int:
         return webhook_check(args, relay_dir, path)
     current = read_env_file(path)
 
-    url = (args.url or os.environ.get("LARK_BOT_WEBHOOK_URL") or current.get("LARK_BOT_WEBHOOK_URL") or "").strip()
-    key = ""
+    if args.url and not re.match(r"^https?://", args.url.strip(), flags=re.I):
+        out("status: error", "error: the webhook URL must start with https://")
+        return 2
+    pasted_key = ""
     if args.key_stdin:
         if sys.stdin.isatty():
             out("status: error", "error: --key-stdin needs the key piped on stdin")
             return 2
-        key = clean_key(sys.stdin.read())
-    if not key:
-        key = clean_key(os.environ.get(args.key_env) or current.get("LARK_BOT_WEBHOOK_KEY") or "")
+        pasted_key = sys.stdin.read()
+    url, key = sort_webhook_inputs(
+        args.url or os.environ.get(args.url_env) or "",
+        pasted_key or os.environ.get(args.key_env) or "",
+    )
+    url = url or current.get("LARK_BOT_WEBHOOK_URL", "").strip()
+    key = key or clean_key(current.get("LARK_BOT_WEBHOOK_KEY") or "")
     if url and not (url.startswith("https://") or LOCAL_URL_RE.match(url)):
         out("status: error", "error: the webhook URL must start with https://")
         return 2
@@ -1223,8 +1250,8 @@ def cmd_webhook(args: argparse.Namespace) -> int:
         if verdict == "rejected":
             nxt = (
                 "The URL or key does not match. Ask the operator to copy both again from the "
-                "routine's Webhook section (clicking a field copies it), save the key in the "
-                "secret again, then run this command again."
+                "routine's Webhook section (clicking a field copies it) into the two secure "
+                "secrets, then run this command again."
             )
         else:
             nxt = (
@@ -1236,12 +1263,13 @@ def cmd_webhook(args: argparse.Namespace) -> int:
         return 4
     missing = []
     if not url:
-        missing.append("url (pass --url 'https://...')")
+        missing.append(f"url (save it in a secure secret named {args.url_env}, or pass --url 'https://...')")
     if not key:
         missing.append(
-            f"key (save it in a secure secret named {args.key_env} and run this again from a new "
-            "shell, or pipe it with --key-stdin)"
+            f"key (save it in a secure secret named {args.key_env}, or pipe it with --key-stdin)"
         )
+    if missing:
+        missing.append("a secret saved a moment ago may only be visible to a new shell: run this again from one")
     out(
         "status: incomplete",
         f"url: {'set' if url else 'missing'}",
@@ -1372,7 +1400,10 @@ def build_parser() -> argparse.ArgumentParser:
     common(p)
     p.add_argument("--relay-dir", default=None,
                    help="relay directory (default: ~/.lark-relay; ~/.lark-relay-<bot> when --bot is given)")
-    p.add_argument("--url", help="webhook URL (https://...); falls back to env LARK_BOT_WEBHOOK_URL, then the file")
+    p.add_argument("--url", help="webhook URL (https://...); otherwise read from the environment "
+                   "variable named by --url-env, then from the file")
+    p.add_argument("--url-env", default="LARK_BOT_WEBHOOK_URL", metavar="NAME", type=env_name_arg,
+                   help="environment variable that holds the URL (default: LARK_BOT_WEBHOOK_URL)")
     p.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
     p.add_argument("--key-env", default="LARK_BOT_WEBHOOK_KEY", metavar="NAME", type=env_name_arg,
                    help="environment variable that holds the key (default: LARK_BOT_WEBHOOK_KEY); "
