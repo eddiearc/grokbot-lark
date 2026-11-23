@@ -47,7 +47,8 @@ echo "== 1. app: link and QR image"
 python3 scripts/onboard.py app --bot e2e --name "Atlas" > "${WORK}/app.out" 2>&1
 rc=$?
 check "app exits 0 and waits for a scan" '[[ ${rc} -eq 0 ]] && grep -q "^status: waiting_for_scan" "${WORK}/app.out"'
-check "link carries name, scopes and createOnly" 'grep -q "^verification_url: .*&name=Atlas&.*&addons=.*&createOnly=true$" "${WORK}/app.out"'
+check "printed link carries name and createOnly but no scopes" 'grep -q "^verification_url: .*&name=Atlas&.*&createOnly=true$" "${WORK}/app.out" && ! grep -q "^verification_url: .*addons=" "${WORK}/app.out"'
+check "QR was generated from the full link with scopes" 'grep "\"qrcode\"" "${FAKE_CTRL}/calls.log" | grep -q "addons="'
 check "QR file exists" 'test -f "$(sed -n "s/^qr_png: //p" "${WORK}/app.out")"'
 
 echo "== 2. wait: returns by itself when the operator finishes"

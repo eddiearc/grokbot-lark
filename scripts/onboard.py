@@ -403,7 +403,7 @@ def kill_registration(state: dict) -> None:
 def print_waiting(store: Store, state: dict) -> None:
     qr = state.get("qr_png")
     if qr and not Path(qr).is_file():
-        qr, reason = store.make_qr(state["url"], "app-qr.png")
+        qr, reason = store.make_qr(state.get("full_url") or state["url"], "app-qr.png")
         state["qr_png"] = qr
         state["qr_reason"] = reason
         store.write_json(store.app_init, state)
@@ -411,11 +411,12 @@ def print_waiting(store: Store, state: dict) -> None:
         "status: waiting_for_scan",
         f"bot: {store.bot}",
         f"app_name: {state.get('name', store.bot)}",
-        f"verification_url: {state['url']}",
         f"qr_png: {qr or 'unavailable (' + state.get('qr_reason', 'not generated') + ')'}",
-        f"scopes_preset: {state.get('scopes_preset', 'none')}",
-        "next: Send the operator ONE message now with verification_url exactly as printed "
-        "(never shorten, wrap or re-encode it) and the QR image attached, then immediately run: "
+        f"qr_carries: {state.get('qr_carries', 'app name')}",
+        f"verification_url: {state['url']}",
+        "next: Send the operator ONE message now: attach the QR image (scanning it with Feishu or "
+        "Lark creates the app with every permission in one go) and paste verification_url exactly "
+        "as printed for anyone who cannot scan. Then immediately run: "
         f"{next_cmd('wait', store.bot)}",
     )
 
@@ -576,12 +577,16 @@ def cmd_app(args: argparse.Namespace) -> int:
         )
 
     scopes = scope_link.load_scopes(SCOPES_FILE)
-    url = decorate_url(base_url, name, args.desc, args.avatar, scopes, not args.no_scopes)
-    qr, reason = store.make_qr(url, "app-qr.png")
-    preset = "none" if args.no_scopes else f"{len(scopes)} bot scopes + {EVENT}"
+    # The QR image carries the full link (scopes included); the link printed for pasting is the
+    # same one without the long addons parameter, so it never depends on a model copying it.
+    full_url = decorate_url(base_url, name, args.desc, args.avatar, scopes, not args.no_scopes)
+    url = decorate_url(base_url, name, args.desc, args.avatar, scopes, False)
+    qr, reason = store.make_qr(full_url, "app-qr.png")
+    carries = "app name" if args.no_scopes else f"app name, {len(scopes)} bot scopes, {EVENT}"
     state = {
         "pid": proc.pid,
         "url": url,
+        "full_url": full_url,
         "qr_png": qr,
         "qr_reason": reason,
         "out_log": str(out_log),
@@ -590,7 +595,7 @@ def cmd_app(args: argparse.Namespace) -> int:
         "started_at": int(time.time()),
         "name": name,
         "brand": args.brand,
-        "scopes_preset": preset,
+        "qr_carries": carries,
     }
     store.write_json(store.app_init, state)
     print_waiting(store, state)
@@ -793,6 +798,7 @@ def cmd_scopes(args: argparse.Namespace) -> int:
         time.sleep(max(0.0, min(interval, deadline - time.time())) or 0.01)
 
     status = report["status"]
+    qr = None
     lines = [
         f"status: {status}",
         f"bridge_ready: {report['bridge']}",
@@ -808,26 +814,39 @@ def cmd_scopes(args: argparse.Namespace) -> int:
             info["app_id"], info["brand"], scope_link.build_addons(targets, (EVENT,))
         )
         qr, reason = store.make_qr(apply_url, "scopes-qr.png")
-        lines += [
-            f"apply_url: {apply_url}",
-            f"apply_qr_png: {qr or 'unavailable (' + reason + ')'}",
-            f"fallback_url: {scope_link.build_url(info['app_id'], info['brand'], targets)}",
-            "fallback_note: after confirming on the fallback page, publish a new app version "
-            "in the developer console",
-        ]
-    relay_cmd = next_cmd("relay", args.bot)
+        if qr:
+            lines += [
+                f"apply_qr_png: {qr}",
+                f"permissions_page: {scope_link.open_host(info['brand'])}/app/{info['app_id']}/auth",
+            ]
+        else:
+            lines += [
+                f"apply_url: {apply_url}",
+                f"apply_qr_png: unavailable ({reason})",
+                f"fallback_url: {scope_link.build_url(info['app_id'], info['brand'], targets)}",
+                "fallback_note: after confirming on the fallback page, publish a new app version "
+                "in the developer console",
+            ]
+    relay_cmd = next_cmd("relay", args.bot, "--start")
     if status == "complete":
         nxt = relay_cmd
     elif status == "blocked":
+        send = (
+            "apply_qr_png to scan (permissions_page is the manual alternative)"
+            if qr
+            else "apply_url exactly as printed"
+        )
         nxt = (
-            "The relay cannot receive messages yet. Show apply_url with the QR image to the "
-            f"operator, then run: {next_cmd('scopes', args.bot, '--wait 600')}"
+            f"The relay cannot receive messages yet. Send the operator {send}, "
+            f"then run: {next_cmd('scopes', args.bot, '--wait 600')}"
         )
     else:
-        nxt = (
-            f"Continue with: {relay_cmd}. Mention apply_url (with the QR image) to the operator "
-            "once at the end of setup; do not wait for it."
+        how = (
+            "attach apply_qr_png once and say that scanning it adds the remaining permissions"
+            if qr
+            else "send apply_url exactly as printed"
         )
+        nxt = f"Continue with: {relay_cmd}. In your final setup message, {how}; do not wait for it."
     lines.append(f"next: {nxt}")
     out(*lines)
     return 3 if status == "blocked" else 0
@@ -1004,15 +1023,18 @@ def cmd_relay(args: argparse.Namespace) -> int:
     if configured:
         nxt = f"{relay_dir / 'status.sh'}"
     else:
-        flags = ""
-        if args.bot != DEFAULT_BOT:
-            flags += f" --bot {args.bot}"
+        bot_flag = "" if args.bot == DEFAULT_BOT else f" --bot {args.bot}"
+        flags = bot_flag
         if args.relay_dir:
             flags += f" --relay-dir {args.relay_dir}"
         nxt = (
-            "Create the two routines, then save the handler routine's webhook: "
-            f"python3 scripts/onboard.py webhook{flags} --url '<POST to URL>'. "
-            "The key is read from the LARK_BOT_WEBHOOK_KEY secret; never put it on the command line."
+            "Create the two routines; their instructions are printed by: "
+            f"python3 scripts/onboard.py routine handler{bot_flag} and "
+            f"python3 scripts/onboard.py routine health-check{bot_flag}. "
+            "Then, in this order: 1) tell the operator where the webhook URL and key are "
+            "(the handler routine's Webhook section), 2) request a secure secret named "
+            f"LARK_BOT_WEBHOOK_KEY, 3) run: python3 scripts/onboard.py webhook{flags} "
+            "--url '<POST to URL>'. Never put the key on the command line."
         )
     out(f"next: {nxt}")
     return code
