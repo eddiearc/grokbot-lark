@@ -872,34 +872,48 @@ def cmd_scopes(args: argparse.Namespace) -> int:
     except ValueError:
         settle = SETTLE_SECONDS
 
-    def check(until: float, addable: bool = False) -> dict:
-        """Report until it is complete, the time is up, or (addable) the app can add scopes."""
+    def check(until: float) -> dict:
+        """Report until it is complete or the time is up."""
         while True:
             report = scopes_report(store, info, required)
             if report["status"] == "complete" or time.time() >= until:
                 return report
-            if addable and report["can_add"] and report["missing"]:
-                return report
             time.sleep(max(0.0, min(interval, until - time.time())) or 0.01)
 
-    # With --wait this also waits for the operator to grant APP_CONFIG_SCOPE.
-    report = check(deadline, addable=True)
+    # Trying to add the scopes is the test of whether the app may: the scope status has been
+    # seen to lag behind, or to leave APP_CONFIG_SCOPE out, while the grant page already says
+    # there is nothing to grant. With --wait this keeps trying until the operator has granted it.
     added = 0
     apply_error = review = ""
-    if report["missing"] and report["can_add"]:
+    denied = False
+    while True:
+        report = scopes_report(store, info, required)
+        if report["status"] == "complete" or not report["missing"]:
+            break
         if report["to_add"]:
             ok, detail = add_scopes(store, app_id, report["to_add"])
             if ok:
+                denied = False
                 added = len(report["to_add"])
                 report = check(time.time() + settle)
-            else:
+                break
+            if scope_link.APP_CONFIG_SCOPE not in str(detail):
                 apply_error = detail
-        if not apply_error and report["missing"]:
-            # A scope that needs no review is granted at once. What is still missing takes
-            # effect with a release of the app, which some tenants have an admin approve.
-            ok, detail = publish_app(store, app_id)
-            review = f"release {detail} submitted" if ok else f"no release submitted ({detail})"
-            report = check(max(deadline, time.time() + settle))
+                break
+            denied = True
+        elif report["can_add"]:
+            break
+        else:
+            denied = True
+        if time.time() >= deadline:
+            break
+        time.sleep(max(0.0, min(interval, deadline - time.time())) or 0.01)
+    if report["missing"] and not denied and not apply_error:
+        # A scope that needs no review is granted at once. What is still missing takes
+        # effect with a release of the app, which some tenants have an admin approve.
+        ok, detail = publish_app(store, app_id)
+        review = f"release {detail} submitted" if ok else f"no release submitted ({detail})"
+        report = check(max(deadline, time.time() + settle))
 
     status = report["status"]
     missing = report["missing"]
@@ -919,15 +933,20 @@ def cmd_scopes(args: argparse.Namespace) -> int:
     if missing:
         lines.append("missing: " + ",".join(missing))
     # One confirmation on this page gives the app APP_CONFIG_SCOPE; the next run adds the rest.
-    need_grant = bool(missing) and not report["can_add"]
+    need_grant = bool(missing) and denied
     qr = None
+    # Lark (international) does not offer APP_CONFIG_SCOPE: its grant page says there is
+    # nothing to grant. There the operator confirms the missing scopes themselves, on a page
+    # whose link is too long to paste, so it goes out as a QR image only.
+    full_list = need_grant and info["brand"] == "lark"
     if need_grant:
-        grant_url = scope_link.build_url(app_id, info["brand"], [scope_link.APP_CONFIG_SCOPE])
+        grant_url = scope_link.build_url(
+            app_id, info["brand"], missing if full_list else [scope_link.APP_CONFIG_SCOPE]
+        )
         qr, reason = store.make_qr(grant_url, "grant-qr.png")
-        lines += [
-            f"grant_url: {grant_url}",
-            f"grant_qr_png: {qr or 'unavailable (' + reason + ')'}",
-        ]
+        if not full_list or not qr:
+            lines.append(f"grant_url: {grant_url}")
+        lines.append(f"grant_qr_png: {qr or 'unavailable (' + reason + ')'}")
     lines.append(f"permissions_page: {scope_link.open_host(info['brand'])}/app/{app_id}/auth")
 
     relay_cmd = next_cmd("relay", args.bot, "--start")
@@ -938,10 +957,17 @@ def cmd_scopes(args: argparse.Namespace) -> int:
         send = "paste grant_url exactly as printed" + (
             " and attach grant_qr_png (both open the same page)" if qr else ""
         )
+        if full_list and qr:
+            send = (
+                "attach grant_qr_png (scanning it with Lark opens one page that lists the "
+                "missing permissions) and give permissions_page as the manual alternative"
+            )
         lead = "The relay cannot receive messages yet. " if status == "blocked" else ""
         nxt = (
-            f"{lead}Send the operator ONE message now: {send}. One confirmation there lets you "
-            f"add the missing permissions yourself. Then immediately run: {wait_cmd}"
+            f"{lead}Send the operator ONE message now: {send}. "
+            + ("They confirm the permissions there. " if full_list else
+               "One confirmation there lets you add the missing permissions yourself. ")
+            + f"Then immediately run: {wait_cmd}"
         )
     elif status == "blocked":
         if need_grant:

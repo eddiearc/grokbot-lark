@@ -104,6 +104,9 @@ through the API. The operator does nothing.
   "Modify app info". Send ONE message with `grant_url` pasted exactly as printed and
   `grant_qr_png` attached; one confirmation there is enough. Then run `scopes --wait 600`: it
   adds the permissions the moment they confirm.
+- `partial` with `grant_qr_png` only (Lark international): Lark cannot let you add permissions
+  yourself. Attach `grant_qr_png`; the operator confirms the permissions on that page. Then run
+  `scopes --wait 600`.
 - `partial` with `review:` or `apply_error:`: the bridge works. Keep going and say in your final
   message what `next:` tells you to say.
 - `blocked`: the bridge cannot receive messages yet. The `blocker:` lines say why; follow
