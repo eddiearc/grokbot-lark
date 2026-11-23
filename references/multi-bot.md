@@ -35,9 +35,10 @@ Saved secrets are environment variables of the whole computer, so ask for this b
 under a name of its own (here `LARK_BOT_WEBHOOK_KEY_SALES_BOT`) and pass that name with
 `--key-env`.
 
-In that bot's two routine instructions, replace `~/.lark-relay` with its relay directory. The
-payload's `instructions` field already names the right store env file, because each relay reads
-`LARK_BOT_ENV` from its own `relay.env`.
+Take that bot's routine instructions from `python3 scripts/onboard.py routine handler --bot
+sales-bot` and `… routine health-check --bot sales-bot`: they name its relay directory instead
+of `~/.lark-relay`. The payload's `instructions` field already names the right store env file,
+because each relay reads `LARK_BOT_ENV` from its own `relay.env`.
 
 `status.sh` counts only the event consumer started by its own relay, so two healthy relays do
 not report each other as duplicates.

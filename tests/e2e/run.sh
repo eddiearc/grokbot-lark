@@ -69,12 +69,12 @@ python3 scripts/onboard.py relay --bot e2e > "${WORK}/relay.out" 2>&1
 rc=$?
 check "relay installed, webhook not configured yet" '[[ ${rc} -eq 0 ]] && grep -q "^status: installed" "${WORK}/relay.out" && grep -q "^webhook: not configured" "${WORK}/relay.out"'
 check "relay.env carries the bot identity" 'grep -q "^LARK_BOT_OPEN_ID=ou_bot" "${RELAY}/relay.env" && grep -q "^LARK_BOT_ENV=${HOME}/.lark-bots/e2e/env.sh" "${RELAY}/relay.env"'
-LARK_BOT_WEBHOOK_KEY="Bearer test-key-123" python3 scripts/onboard.py webhook --bot e2e --url "https://example.invalid/hook" > "${WORK}/webhook.out" 2>&1
+LARK_BOT_WEBHOOK_KEY="Bearer test-key-123" ONBOARD_SKIP_WEBHOOK_TEST=0 python3 scripts/onboard.py webhook --bot e2e --url "http://127.0.0.1:$(cat "${WORK}/hook.port")/hook" > "${WORK}/webhook.out" 2>&1
 rc=$?
-check "webhook saved without printing the key" '[[ ${rc} -eq 0 ]] && grep -q "^status: saved" "${WORK}/webhook.out" && ! grep -q "test-key-123" "${WORK}/webhook.out"'
+check "webhook saved, connectivity check accepted, key not printed" '[[ ${rc} -eq 0 ]] && grep -q "^status: saved" "${WORK}/webhook.out" && grep -q "^test: accepted (HTTP 200)" "${WORK}/webhook.out" && ! grep -q "test-key-123" "${WORK}/webhook.out"'
 check "webhook.env is private and the Bearer prefix is gone" '[[ "$(stat -c %a "${RELAY}/webhook.env")" == "600" ]] && grep -q "^LARK_BOT_WEBHOOK_KEY=test-key-123$" "${RELAY}/webhook.env"'
-# onboard.py insists on https; point the relay at the local stand-in by hand.
-sed -i "s#^LARK_BOT_WEBHOOK_URL=.*#LARK_BOT_WEBHOOK_URL=http://127.0.0.1:$(cat "${WORK}/hook.port")/hook#" "${RELAY}/webhook.env"
+python3 scripts/onboard.py routine health-check --bot e2e > "${WORK}/routine.out" 2>&1
+check "routine health-check names this bot's relay directory" 'grep -q "~/.lark-relay-e2e/status.sh" "${WORK}/routine.out"'
 "${RELAY}/start.sh" > "${WORK}/start.out" 2>&1
 rc=$?
 check "start.sh reports the long connection ready" '[[ ${rc} -eq 0 ]] && grep -q "long connection ready" "${WORK}/start.out"'
@@ -82,12 +82,14 @@ check "start.sh reports the long connection ready" '[[ ${rc} -eq 0 ]] && grep -q
 check "a second start.sh says already running" 'grep -q "already running" "${WORK}/start2.out"'
 
 echo "== 5. an inbound message reaches the webhook"
-for _ in $(seq 1 40); do [[ -s "${WORK}/hook.log" ]] && break; sleep 0.5; done
+# The first request in the log is setup's relay_test; wait for the forwarded message itself.
+for _ in $(seq 1 40); do grep -q '"message_id"' "${WORK}/hook.log" 2>/dev/null && break; sleep 0.5; done
 python3 - "${WORK}/hook.log" "${HOME}" << 'PY'
 import json
 import sys
 
-rec = json.loads(open(sys.argv[1]).readline())
+records = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+rec = next(r for r in records if "message_id" in r["body"])
 body = rec["body"]
 ok = True
 
@@ -98,6 +100,7 @@ def check(name, cond):
     ok = ok and bool(cond)
 
 
+check("setup sent a relay_test request first", any(r["body"].get("type") == "relay_test" for r in records))
 check("bearer key sent", rec["authorization"] == "Bearer test-key-123")
 check("message id and text", body["message_id"] == "om_1" and body["text"] == "hello bot")
 check("sender resolved", body["sender"].get("name") == "Alice" and body["sender"].get("email") == "alice@example.com")

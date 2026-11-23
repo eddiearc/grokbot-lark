@@ -191,6 +191,8 @@ class OnboardCase(unittest.TestCase):
             "ONBOARD_POLL_SECONDS": "0.1",
             "ONBOARD_URL_TIMEOUT": "10",
             "PYTHONDONTWRITEBYTECODE": "1",
+            # webhook tests that exercise the connectivity check set this to 0 and use a loopback server
+            "ONBOARD_SKIP_WEBHOOK_TEST": "1",
             # must be ignored by onboard.py for every lark-cli call
             "LARKSUITE_CLI_CONFIG_DIR": "/nonexistent/caller-config",
         }

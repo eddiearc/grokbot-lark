@@ -38,7 +38,8 @@ cd ~/grokbot-lark
 command -v lark-cli >/dev/null || npm install -g @larksuite/cli
 ```
 
-Needs Linux with `python3` (3.9+), `npm`, `flock`, `setsid`, and `ps`.
+Needs Linux with `python3` (3.9+), `flock`, `setsid`, and `ps`. `npm` is needed only to install
+`lark-cli`.
 
 ### 1. Create the app: one scan
 
@@ -50,13 +51,22 @@ python3 scripts/onboard.py app --name "<your own display name>"
 - Add `--avatar <https URL>` if you have a public URL of your own avatar. Skip it otherwise.
 - Do not ask the operator anything first. A name, scopes, and events are already in the link.
 
-The output has `verification_url` and `qr_png`. **Send one message now** that contains the link
-as text and the QR image, for example: "Open this link, or scan it with Feishu, and confirm."
+The output has `verification_url` and `qr_png`. **Send one message now** with the link and the
+QR image, for example: "Open this link, or scan it with Feishu, and confirm."
+
+- The link is long because it carries the app's name and permissions. Send it **exactly as
+  printed**: never shorten it, drop parameters, wrap it, or re-encode it. To keep the chat
+  readable you may make it a Markdown link, with the full URL as its target.
+- Attach the file at `qr_png`. It is the same link as a QR code.
+
 Then, in the same turn, wait:
 
 ```bash
 python3 scripts/onboard.py wait
 ```
+
+`wait` blocks until the operator finishes, for up to 10 minutes (`--timeout <seconds>` changes
+that). If your shell cuts a command off sooner, just run it again.
 
 | Exit | `status` | What to do |
 | --- | --- | --- |
@@ -96,28 +106,38 @@ spool, so nothing is lost.
 
 ### 4. Create your two routines
 
-Create both yourself. Do not ask the operator to write them.
+Create both yourself. Do not ask the operator to write them. Each command prints the routine's
+instruction text and nothing else:
 
 | Routine | Trigger | Instruction |
 | --- | --- | --- |
-| `Lark message handler` | Webhook | `templates/handler-routine-prompt.md`, everything below its `---` line |
-| `Lark relay health check` | Every 30 minutes | `templates/health-check-routine-prompt.md`, everything below its `---` line |
+| `Lark message handler` | Webhook | output of `python3 scripts/onboard.py routine handler` |
+| `Lark relay health check` | Every 30 minutes | output of `python3 scripts/onboard.py routine health-check` |
 
 ### 5. Connect the webhook
 
-You cannot read your own webhook URL or key; only the operator can see them. Ask once:
+You cannot read your own webhook URL or key; only the operator can see them. In this order:
 
-> Open the **Lark message handler** routine on desktop. In its **Webhook** section, paste the
-> **POST to** URL here, and save the **key** in the secure card I am showing you.
+1. Tell the operator where both are, before you ask for anything:
 
-Request a secure secret card named `LARK_BOT_WEBHOOK_KEY` for the key. Then run:
+   > Open the **Lark message handler** routine on desktop. Its **Webhook** section shows
+   > **POST to** and **key**; clicking a field copies it. Paste the **POST to** URL here, and
+   > put the **key** in the secure card I am about to show you.
 
-```bash
-python3 scripts/onboard.py webhook --url '<POST to URL>'
-```
+2. Request a secure secret card named `LARK_BOT_WEBHOOK_KEY`. Never ask for the key in chat.
+3. When you have the URL and the card is saved, run:
 
-`status: saved` means done; the relay picks it up within seconds, with no restart. If it says
-`key: missing`, your shell cannot see the secret: follow `next:`.
+   ```bash
+   python3 scripts/onboard.py webhook --url '<POST to URL>'
+   ```
+
+The command saves both and sends one test call to the webhook. `status: saved` with
+`test: accepted` means the URL and key are right; the relay picks them up within seconds, with
+no restart. `status: rejected` means they do not match, and `key: missing` means your shell
+cannot see the secret: follow `next:` in both cases.
+
+The test call starts one run of your handler routine with a body whose `type` is `relay_test`.
+The routine's instruction tells you to end that run without doing anything.
 
 ### 6. Verify and hand over
 
@@ -156,9 +176,10 @@ exact reply command for this bot; use it as given.
 | --- | --- |
 | Health report | `~/.lark-relay/status.sh` (ends with `status:` and one `problem:` line per fault) |
 | Start / stop | `~/.lark-relay/start.sh`, `~/.lark-relay/stop.sh` |
-| Upgrade | `git pull`, then `python3 scripts/onboard.py relay --start`, then replace both routine instructions with the current `templates/` text (edit the routines; do not recreate them) |
+| Upgrade | `git pull`, then `python3 scripts/onboard.py relay --start`, then replace both routine instructions with the current text (edit the routines; do not recreate them) |
 | Re-check permissions | `python3 scripts/onboard.py scopes` |
 | Change the webhook | `python3 scripts/onboard.py webhook --url '<new URL>'` |
+| Routine instructions | `python3 scripts/onboard.py routine handler`, `… routine health-check` |
 | Logs | `~/.lark-relay/logs/relay.jsonl`, `consume.stderr.log`, `supervisor.log` |
 
 `start.sh` returns as soon as the long connection is ready and is safe to run twice. Never run
