@@ -515,5 +515,81 @@ class PayloadTests(unittest.TestCase):
         self.assertNotIn("is_owner", blob)
 
 
+class _Resolver:
+    def resolve_user(self, open_id, message_id=None, hint=None):
+        return {"open_id": open_id, "name": "Alice", "name_unresolved": False}
+
+    def resolve_chat(self, chat_id, chat_type=None):
+        return {"chat_id": chat_id, "name": "Direct message", "type": chat_type or "p2p"}
+
+    def resolve_mentions(self, mentions):
+        return []
+
+
+class FitPayloadTests(unittest.TestCase):
+    """The webhook passes only about 4,000 characters of the body to the run."""
+
+    def payload(self, text: str) -> dict:
+        event = {
+            "message_id": "msg_1",
+            "chat_id": "chat_1",
+            "chat_type": "p2p",
+            "sender_id": "user_example",
+            "content": text,
+            "mentions": [],
+        }
+        return identity.build_payload(event, _Resolver(), reaction_id="r_1")
+
+    def test_short_message_is_sent_as_is(self):
+        payload = self.payload("hello")
+        fitted = identity.fit_payload(payload)
+        self.assertIs(fitted, payload)
+        self.assertIn("raw", fitted)
+        self.assertNotIn("text_truncated", fitted)
+        self.assertLessEqual(identity.body_size(fitted), identity.WEBHOOK_BODY_LIMIT)
+
+    def test_text_and_raw_are_the_last_fields(self):
+        self.assertEqual(list(self.payload("hello"))[-2:], ["text", "raw"])
+
+    def test_raw_event_goes_first(self):
+        text = "word " * 240  # 1,200 characters, repeated in the raw event
+        payload = self.payload(text)
+        self.assertGreater(identity.body_size(payload), identity.WEBHOOK_BODY_LIMIT)
+        fitted = identity.fit_payload(payload)
+        self.assertNotIn("raw", fitted)
+        self.assertEqual(fitted["text"], text)
+        self.assertNotIn("text_truncated", fitted)
+        self.assertLessEqual(identity.body_size(fitted), identity.WEBHOOK_BODY_LIMIT)
+        self.assertIn("raw", payload)  # the original is not modified
+
+    def test_long_cjk_text_is_shortened_and_points_to_the_full_message(self):
+        text = "\u6d4b\u8bd5" * 1500  # 3,000 characters, 9,000 bytes
+        fitted = identity.fit_payload(self.payload(text))
+        self.assertLessEqual(identity.body_size(fitted), identity.WEBHOOK_BODY_LIMIT)
+        self.assertTrue(fitted["text_truncated"])
+        self.assertEqual(fitted["text_length"], 3000)
+        self.assertTrue(text.startswith(fitted["text"]))
+        self.assertGreater(len(fitted["text"]), 100)
+        self.assertIn("im +messages-mget --message-ids msg_1 --as bot", fitted["instructions"])
+        self.assertIn("im +messages-reply --message-id msg_1 --as bot", fitted["instructions"])
+        for key in ("message_id", "chat_id", "sender", "reaction_id", "summary", "console_url"):
+            self.assertIn(key, fitted)
+        import json
+
+        self.assertEqual(json.loads(json.dumps(fitted, ensure_ascii=False))["message_id"], "msg_1")
+
+    def test_limit_can_be_changed_or_switched_off(self):
+        from unittest import mock
+
+        payload = self.payload("word " * 2000)
+        self.assertIs(identity.fit_payload(payload, limit=0), payload)
+        with mock.patch.dict(os.environ, {"LARK_WEBHOOK_BODY_LIMIT": "0"}):
+            self.assertIs(identity.fit_payload(payload), payload)
+        with mock.patch.dict(os.environ, {"LARK_WEBHOOK_BODY_LIMIT": "2500"}):
+            self.assertLessEqual(identity.body_size(identity.fit_payload(payload)), 2500)
+        with mock.patch.dict(os.environ, {"LARK_WEBHOOK_BODY_LIMIT": "not-a-number"}):
+            self.assertLessEqual(identity.body_size(identity.fit_payload(payload)), identity.WEBHOOK_BODY_LIMIT)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -57,11 +57,11 @@ If the webhook is not configured or the POST fails, the payload is appended to
              "user_id": "…", "employee_no": "…"},
   "chat": {"chat_id": "oc_…", "type": "p2p", "name": "Direct message"},
   "mentions": [{"open_id": "ou_…", "name": "…"}],
-  "text": "hello",
+  "reaction_id": "…",
   "summary": "Alice in a direct message said: hello",
   "console_url": "https://open.feishu.cn/app/cli_…/auth",
   "instructions": "…the reply command for this bot and the rules…",
-  "reaction_id": "…",
+  "text": "hello",
   "raw": {"…": "the event exactly as lark-cli emitted it"}
 }
 ```
@@ -69,6 +69,11 @@ If the webhook is not configured or the POST fails, the payload is appended to
 - `sender` always has `open_id`. The other fields appear when the contact scopes allow it.
   `name_unresolved: true` (on the payload and in `sender`) means no display name was found.
 - `text` is `lark-cli`'s plain-text rendering. For an interactive card it is the raw card JSON.
+- A routine webhook passes only about 4,000 characters of the body to the run, so the relay
+  keeps the body under 3,600 bytes. It drops `raw` first. If that is not enough it shortens
+  `text`, sets `text_truncated` and `text_length`, and ends `instructions` with the `lark-cli`
+  command that reads the whole message. `LARK_WEBHOOK_BODY_LIMIT` in `relay.env` changes the
+  limit; `0` turns it off.
 - There is no owner flag. Every sender is an ordinary user.
 - Setup sends one body with `"type": "relay_test"` to check the webhook. It is not a message;
   the handler ends that run without replying.
