@@ -67,7 +67,9 @@ not exit on TERM: `stop.sh` ends it anyway.
 
 Afterwards replace the instructions of both routines with the current text
 (`python3 scripts/onboard.py routine handler` and `… routine health-check`). Edit the routines
-in place; a new handler routine would get a new webhook URL and key.
+in place; a new handler routine would get a new webhook URL and key. Then run
+`python3 scripts/onboard.py webhook --check`: it tests the URL and key the relay already has and
+changes nothing.
 
 ## Starting over
 

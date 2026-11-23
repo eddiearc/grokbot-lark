@@ -118,6 +118,9 @@ routine's **Webhook** section on desktop. That makes this the one manual step:
    or key shows up here (`status: rejected`) instead of at the first real message. `--no-test`
    skips the call.
 
+`python3 scripts/onboard.py webhook --check` sends the same test call with the URL and key the
+relay already uses, and writes nothing. Use it after an upgrade or when replies stop.
+
 A secret saved through the card is added to the computer's environment, which every bot on the
 machine shares. If the command reports `key: missing`, the secret did not reach your shell:
 
