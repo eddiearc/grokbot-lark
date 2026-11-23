@@ -217,7 +217,7 @@ class SupervisorTests(ShellCase):
         out = self.run_script("status.sh")
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn("webhook: configured (environment)", out.stdout)
-        self.assertIn("event consume processes: 1 (expected 1)", out.stdout)
+        self.assertIn("event listener processes: 1 (expected 1)", out.stdout)
         self.assertIn("consumer key=im.message.receive_v1 received=12 dropped=0", out.stdout)
         self.assertEqual(out.stdout.strip().splitlines()[-1], "status: healthy")
         self.assertNotIn("k_test", out.stdout)

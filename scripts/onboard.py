@@ -1063,9 +1063,9 @@ def previous_bot_open_id(relay_dir: Path) -> Optional[str]:
 
 
 def install_relay(relay_dir: Path) -> bool:
-    """Copy relay/*.py and relay/*.sh; return True when relay.py already existed."""
+    """Copy relay/*.py, *.sh and *.mjs; return True when relay.py already existed."""
     sources = sorted(
-        p for p in RELAY_SRC.iterdir() if p.is_file() and p.suffix in (".py", ".sh")
+        p for p in RELAY_SRC.iterdir() if p.is_file() and p.suffix in (".py", ".sh", ".mjs")
     ) if RELAY_SRC.is_dir() else []
     if not any(p.name == "relay.py" for p in sources):
         raise OnboardError(f"relay sources not found in {RELAY_SRC}")
@@ -1079,6 +1079,43 @@ def install_relay(relay_dir: Path) -> bool:
         os.chmod(tmp, 0o700 if src.suffix == ".sh" else 0o600)
         os.replace(tmp, dest)
     return upgraded
+
+
+NODE_SDK = "@larksuiteoapi/node-sdk@1.75.0"
+
+
+def install_node_sdk(relay_dir: Path) -> str:
+    """Install the SDK listen.mjs needs into the relay directory. Returns a status word.
+
+    Without it the relay still works: it receives events through `lark-cli event consume`.
+    """
+    marker = relay_dir / "node_modules" / "@larksuiteoapi" / "node-sdk" / "package.json"
+    try:
+        if json.loads(marker.read_text(encoding="utf-8")).get("version") == NODE_SDK.rsplit("@", 1)[1]:
+            return "installed"
+    except (OSError, ValueError):
+        pass
+    npm = shutil.which("npm")
+    if not npm:
+        return "unavailable (npm not found)"
+    try:
+        proc = subprocess.run(
+            [npm, "install", "--prefix", str(relay_dir), "--no-save", "--no-audit", "--no-fund",
+             "--loglevel", "error", NODE_SDK],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            timeout=110,
+        )
+    except subprocess.TimeoutExpired:
+        return "unavailable (npm install timed out; run the command again)"
+    except OSError as exc:
+        return f"unavailable ({exc})"
+    if proc.returncode != 0 or not marker.is_file():
+        last = (proc.stdout or "").strip().splitlines()[-1:] or [""]
+        return f"unavailable (npm install failed: {last[0][:200]})"
+    return "installed"
 
 
 def webhook_values(relay_dir: Path) -> Tuple[str, str]:
@@ -1153,6 +1190,7 @@ def cmd_relay(args: argparse.Namespace) -> int:
             info["bot_open_id"] = open_id
             store.write_json(store.app_json, info)
     upgraded = install_relay(relay_dir)
+    node_sdk = "skipped" if os.environ.get("ONBOARD_SKIP_NODE_SDK") else install_node_sdk(relay_dir)
     if not existing.strip():
         existing = (
             "# Non-secret settings for the relay (written by scripts/onboard.py relay).\n"
@@ -1189,6 +1227,7 @@ def cmd_relay(args: argparse.Namespace) -> int:
         f"bot_env: {store.env_sh}",
         f"bot_open_id: {open_id or 'unknown'}",
         f"webhook: {'configured' if configured else 'not configured'}",
+        f"listener: {'node-sdk' if node_sdk == 'installed' else 'lark-cli; node-sdk ' + node_sdk}",
     )
     if not open_id:
         out(

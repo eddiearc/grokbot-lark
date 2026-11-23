@@ -170,6 +170,18 @@ The relay re-reads `webhook.env` every two seconds and also accepts `LARK_BOT_WE
 `LARK_BOT_WEBHOOK_KEY` from its environment when the file leaves them empty. Messages that
 arrived before the webhook was saved wait in the spool and are delivered as soon as it is.
 
+## How the relay receives messages
+
+`relay.py` starts `listen.mjs`, which opens the long connection with the official Node SDK and
+the app ID and secret `lark-cli` stored for this bot. The secret stays in that store; it is read
+in memory and never printed or copied. The SDK checks the connection after every ping and reopens
+it in place when the server stops answering. Plain text messages are forwarded as they arrive;
+for any other type the relay asks `lark-cli im +messages-mget` for the readable text.
+
+`onboard.py relay` installs the SDK into the relay directory with `npm`. When that fails, or the
+secret cannot be read, the relay uses `lark-cli event consume` instead and says so
+(`listener: lark-cli; …`). `LARK_RELAY_LISTENER=lark-cli` in `relay.env` forces that.
+
 ## What setup writes
 
 ```
@@ -180,5 +192,6 @@ arrived before the webhook was saved wait in the spool and are delivered as soon
 ~/.lark-relay/
   relay.env               LARK_BOT_ENV, LARK_BRAND, LARK_BOT_APP_ID, LARK_BOT_OPEN_ID, LARK_BOT_NAME
   webhook.env             LARK_BOT_WEBHOOK_URL, LARK_BOT_WEBHOOK_KEY (mode 600)
-  *.py *.sh               the relay, copied from relay/
+  *.py *.sh listen.mjs    the relay, copied from relay/
+  node_modules/           @larksuiteoapi/node-sdk, which listen.mjs uses for the long connection
 ```

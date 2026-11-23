@@ -74,9 +74,9 @@ fi
 # Only direct children of this relay's relay.py count, so a second bot on the
 # same machine does not interfere.
 if [[ "${relay_up}" -eq 1 ]]; then
-  consume_n="$(ps -eo ppid=,args= | awk -v p="${rpid}" '$1 == p && /event consume im\.message\.receive_v1/ {c++} END {print c+0}')"
+  consume_n="$(ps -eo ppid=,args= | awk -v p="${rpid}" '$1 == p && /event consume im\.message\.receive_v1|listen\.mjs/ {c++} END {print c+0}')"
 fi
-echo "event consume processes: ${consume_n} (expected 1)"
+echo "event listener processes: ${consume_n} (expected 1)"
 
 if [[ "${sup_up}" -eq 0 ]]; then
   add_problem listener_down "run ${BASE}/start.sh"
