@@ -651,14 +651,21 @@ class RelayTests(OnboardCase):
         self.assertLess(lines.index("relay: stopped"), lines.index("relay: started"))
         self.assertTrue(lines[-1].startswith("next: "))
 
-    def test_start_failure_exit_code_and_ignored_stop_failure(self) -> None:
+    def test_start_failure_sets_the_exit_code(self) -> None:
         self.relay()
         (self.relay_dir / "fail-start").write_text("")
-        (self.relay_dir / "fail-stop").write_text("")
         proc = self.relay("--start")
         self.assertEqual(proc.returncode, 4)
         self.assertIn("relay: failing", proc.stdout)
         self.assertIn("relay: stopped", proc.stdout)
+
+    def test_a_relay_that_does_not_stop_is_an_error(self) -> None:
+        self.relay()
+        (self.relay_dir / "fail-stop").write_text("")
+        proc = self.relay("--start")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("error: the running relay did not stop", proc.stdout)
+        self.assertNotIn("relay: started", proc.stdout)
 
     def test_start_scripts_missing(self) -> None:
         script = make_fake_repo(self.tmp / "repo2", with_start=False)

@@ -156,7 +156,7 @@ exact reply command for this bot; use it as given.
 | --- | --- |
 | Health report | `~/.lark-relay/status.sh` (ends with `status:` and one `problem:` line per fault) |
 | Start / stop | `~/.lark-relay/start.sh`, `~/.lark-relay/stop.sh` |
-| Upgrade | `git pull`, then `python3 scripts/onboard.py relay --start` |
+| Upgrade | `git pull`, then `python3 scripts/onboard.py relay --start`, then replace both routine instructions with the current `templates/` text (edit the routines; do not recreate them) |
 | Re-check permissions | `python3 scripts/onboard.py scopes` |
 | Change the webhook | `python3 scripts/onboard.py webhook --url '<new URL>'` |
 | Logs | `~/.lark-relay/logs/relay.jsonl`, `consume.stderr.log`, `supervisor.log` |
